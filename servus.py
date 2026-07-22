@@ -3,6 +3,7 @@ import secrets
 import time
 import logging
 import re
+import math
 from datetime import datetime
 from shutil import move
 from logging.handlers import RotatingFileHandler
@@ -336,6 +337,110 @@ def get_user_position_admin(wert0):
     return Response("\n".join(output), mimetype="text/plain")
 
 
+def parse_position_datetime(date_str, time_str):
+    """Konvertiert Positionsdatum/-uhrzeit für Sortierung und Linienbildung."""
+    date_part = parse_custom_date(date_str)
+    time_part = parse_custom_time(time_str)
+    if not date_part or not time_part:
+        return None
+    return datetime.combine(date_part.date(), time_part.time())
+
+
+def haversine_distance_km(lat1, lon1, lat2, lon2):
+    """Berechnet den geographischen Abstand zwischen zwei Punkten in Kilometern."""
+    earth_radius_km = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(delta_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    )
+    return earth_radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def build_position_map_data():
+    """Liest Positionsdaten aus der Datenbank und bereitet Marker-/Linien-Daten für die Karte vor."""
+    grouped_points = {}
+
+    for row in UserPosition.query.all():
+        try:
+            latitude = float(getattr(row, SPALTE_1))
+            longitude = float(getattr(row, SPALTE_2))
+        except (TypeError, ValueError):
+            app.logger.warning(f"Ungültige Positionskoordinaten für Datensatz {row.id} übersprungen.")
+            continue
+
+        timestamp = parse_position_datetime(getattr(row, SPALTE_4), getattr(row, SPALTE_3))
+        if timestamp is None:
+            app.logger.warning(f"Ungültiger Positionszeitpunkt für Datensatz {row.id} übersprungen.")
+            continue
+
+        grouped_points.setdefault(row.username, []).append({
+            "id": row.id,
+            "username": row.username,
+            "latitude": latitude,
+            "longitude": longitude,
+            "date": getattr(row, SPALTE_4),
+            "time": getattr(row, SPALTE_3),
+            "timestamp": timestamp.isoformat(),
+            "maps_link": getattr(row, SPALTE_5),
+        })
+
+    users = []
+    palette = [
+        "#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c",
+        "#0891b2", "#be123c", "#4f46e5", "#65a30d", "#ca8a04",
+    ]
+
+    for index, username in enumerate(sorted(grouped_points)):
+        points = sorted(grouped_points[username], key=lambda point: point["timestamp"])
+        lines = []
+        current_line = []
+        previous_point = None
+
+        for point in points:
+            starts_new_line = False
+            if previous_point is not None:
+                distance_km = haversine_distance_km(
+                    previous_point["latitude"],
+                    previous_point["longitude"],
+                    point["latitude"],
+                    point["longitude"],
+                )
+                time_delta_seconds = (
+                    datetime.fromisoformat(point["timestamp"])
+                    - datetime.fromisoformat(previous_point["timestamp"])
+                ).total_seconds()
+                starts_new_line = distance_km > 2 or time_delta_seconds > 60 * 60
+
+            if starts_new_line and current_line:
+                lines.append(current_line)
+                current_line = []
+
+            current_line.append([point["latitude"], point["longitude"]])
+            previous_point = point
+
+        if current_line:
+            lines.append(current_line)
+
+        users.append({
+            "username": username,
+            "color": palette[index % len(palette)],
+            "points": points,
+            "lines": lines,
+        })
+
+    return users
+
+
+@app.route('/map', methods=['GET'])
+def position_map():
+    return render_template('map.html', users=build_position_map_data())
+
+
 # Dynamic Model Creation für flexible Spaltennamen
 class UserPosition(db.Model):
     __tablename__ = TABELLEN_NAME
@@ -353,7 +458,7 @@ setattr(UserPosition, SPALTE_5, db.Column(db.Text, nullable=False))
     
     
 # ==========================================
-# TIMELINE & ACTION TRACKING ENDPUNKTE
+# TIMELINE & ACTION TRACKING ENDPUNKTE 
 # ==========================================
 
 def parse_custom_date(date_str):
