@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>APK Update hochladen</title>
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #111827;
+            color: #f9fafb;
+            font-family: Arial, sans-serif;
+        }
+        main {
+            width: min(92vw, 460px);
+            padding: 2rem;
+            border-radius: 1rem;
+            background: #1f2937;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+        }
+        label {
+            display: block;
+            margin: 1rem 0 0.35rem;
+            font-weight: 700;
+        }
+        input, button {
+            width: 100%;
+            box-sizing: border-box;
+            border-radius: 0.5rem;
+            border: 1px solid #4b5563;
+            padding: 0.75rem;
+            font-size: 1rem;
+        }
+        button {
+            margin-top: 1.25rem;
+            border: 0;
+            background: #2563eb;
+            color: white;
+            cursor: pointer;
+            font-weight: 700;
+        }
+        button:hover {
+            background: #1d4ed8;
+        }
+        .message {
+            padding: 0.75rem;
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .error {
+            background: #7f1d1d;
+        }
+        .success {
+            background: #14532d;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>APK Update hochladen</h1>
+        {% if error %}
+        <div class="message error">{{ error }}</div>
+        {% endif %}
+        {% if success %}
+        <div class="message success">{{ success }}</div>
+        {% endif %}
+        <form method="post" enctype="multipart/form-data">
+            <label for="version">Versionszahl (Format x.y.z)</label>
+            <input id="version" name="version" type="text" pattern="\d+\.\d+\.\d+" placeholder="1.2.3" value="{{ version or '' }}" required>
+
+            <label for="apk_file">APK-Datei</label>
+            <input id="apk_file" name="apk_file" type="file" accept=".apk,application/vnd.android.package-archive" required>
+
+            <button type="submit">Upload Update</button>
+        </form>
+    </main>
+</body>
+</html>
