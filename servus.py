@@ -228,10 +228,88 @@ class UserActionTimeline(db.Model):
     time = db.Column(db.String(8), nullable=False)   # Format: hh-mm-ss
     triggered_action = db.Column(db.String(255), nullable=False)
     username = db.Column(db.String(100), nullable=False)
+
+class ErrorReport(db.Model):
+    __tablename__ = 'error_reports'
+    report_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    severity = db.Column(db.String(10), nullable=False)
+    username = db.Column(db.String(100), nullable=False)
+    app_version = db.Column(db.String(50), nullable=False)
+    error_task = db.Column(db.Text, nullable=False)
+    error = db.Column(db.Text, nullable=False)
+    date = db.Column(db.String(10), nullable=False)
+    time = db.Column(db.String(5), nullable=False)
+    last_action = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
+
+with app.app_context():
+    db.create_all()
     
 
 # Absoluter Pfad zum Basis-Ressourcenordner
 BASE_DIR = os.path.abspath("app_ressources")
+
+def validate_error_report_params():
+    app_version = request.args.get('app-version')
+    error_task = request.args.get('error_task')
+    error = request.args.get('error')
+    report_date = request.args.get('date')
+    report_time = request.args.get('time')
+    last_action = request.args.get('last-action')
+
+    required_params = {
+        'app-version': app_version,
+        'error_task': error_task,
+        'error': error,
+        'date': report_date,
+        'time': report_time,
+        'last-action': last_action,
+    }
+    missing_params = [name for name, value in required_params.items() if value is None]
+    if missing_params:
+        return None, f"Missing query parameters: {', '.join(missing_params)}"
+
+    if not re.fullmatch(r'\d+\.\d+\.\d+', app_version):
+        return None, 'Invalid app-version format. Expected x.y.z.'
+
+    if not re.fullmatch(r'\d{2}\.\d{2}\.(\d{2}|\d{4})', report_date):
+        return None, 'Invalid date format. Expected dd.mm.yyyy or dd.mm.yy.'
+
+    if not re.fullmatch(r'\d{2}\.\d{2}', report_time):
+        return None, 'Invalid time format. Expected hh.mm.'
+
+    return {
+        'app_version': app_version,
+        'error_task': error_task,
+        'error': error,
+        'date': report_date,
+        'time': report_time,
+        'last_action': last_action,
+    }, None
+
+
+def save_error_report(severity, username):
+    report_data, validation_error = validate_error_report_params()
+    if validation_error:
+        return jsonify({'status': 'error', 'message': validation_error}), 400
+
+    report = ErrorReport(severity=severity, username=username, **report_data)
+    db.session.add(report)
+    db.session.commit()
+
+    app.logger.info(f"{severity.upper()} Error-Report gespeichert für User: {username}")
+    return jsonify({'status': 'ok', 'report_id': report.report_id}), 201
+
+
+@app.route('/report/error/soft/<username>', methods=['POST'])
+def report_soft_error(username):
+    return save_error_report('soft', username)
+
+
+@app.route('/report/error/hard/<username>', methods=['POST'])
+def report_hard_error(username):
+    return save_error_report('hard', username)
+
 
 @app.route('/ressources/<path:resource_name>', methods=['GET'])
 def download_resource(resource_name):

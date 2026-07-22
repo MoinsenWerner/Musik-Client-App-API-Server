@@ -13,6 +13,9 @@
         .user-control { display: grid; grid-template-columns: auto 1fr auto; gap: 0.5rem; align-items: center; padding: 0.65rem 0; border-bottom: 1px solid #374151; }
         .user-control label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .meta { color: #d1d5db; font-size: 0.9rem; line-height: 1.45; }
+        .threshold-control { margin: 1rem 0; padding: 0.75rem; background: #111827; border-radius: 0.75rem; }
+        .threshold-control label { display: block; margin-bottom: 0.4rem; font-weight: 700; }
+        .threshold-control input { width: 100%; box-sizing: border-box; }
         input[type="color"] { width: 2.6rem; height: 2rem; border: 0; background: transparent; cursor: pointer; }
         @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } aside { max-height: 42vh; } #map { min-height: 58vh; } }
     </style>
@@ -21,7 +24,11 @@
     <div class="layout">
         <aside>
             <h1>Positionen</h1>
-            <p class="meta">Linien werden pro User nach Datum/Uhrzeit verbunden. Bei mehr als 2 km Abstand oder mehr als 60 Minuten Zeitabstand beginnt eine neue Linie.</p>
+            <p class="meta">Linien werden pro User nach Datum/Uhrzeit verbunden. Bei mehr als dem eingestellten Abstand oder mehr als 60 Minuten Zeitabstand beginnt eine neue Linie.</p>
+            <div class="threshold-control">
+                <label for="max-distance">Maximaler Abstand: <span id="max-distance-value">2</span> km</label>
+                <input id="max-distance" type="range" min="0.1" max="20" step="0.1" value="2">
+            </div>
             <div id="controls"></div>
         </aside>
         <div id="map"></div>
@@ -33,6 +40,9 @@
         const map = L.map('map').setView([51.1657, 10.4515], 6);
         const userLayers = new Map();
         const controls = document.getElementById('controls');
+        const maxDistanceInput = document.getElementById('max-distance');
+        const maxDistanceValue = document.getElementById('max-distance-value');
+        const maxTimeGapMinutes = 60;
 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
@@ -44,6 +54,46 @@
             return `<strong>${point.username}</strong><br>${point.date} ${point.time}<br>${point.latitude}, ${point.longitude}${mapsLink}`;
         }
 
+        function haversineDistanceKm(pointA, pointB) {
+            const earthRadiusKm = 6371;
+            const toRadians = degrees => degrees * Math.PI / 180;
+            const deltaLatitude = toRadians(pointB.latitude - pointA.latitude);
+            const deltaLongitude = toRadians(pointB.longitude - pointA.longitude);
+            const latitudeA = toRadians(pointA.latitude);
+            const latitudeB = toRadians(pointB.latitude);
+            const a = Math.sin(deltaLatitude / 2) ** 2
+                + Math.cos(latitudeA) * Math.cos(latitudeB) * Math.sin(deltaLongitude / 2) ** 2;
+            return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        }
+
+        function buildLines(points, maxDistanceKm) {
+            const lines = [];
+            let currentLine = [];
+            let previousPoint = null;
+
+            points.forEach(point => {
+                let startsNewLine = false;
+                if (previousPoint) {
+                    const distanceKm = haversineDistanceKm(previousPoint, point);
+                    const timeGapMinutes = (new Date(point.timestamp) - new Date(previousPoint.timestamp)) / 60000;
+                    startsNewLine = distanceKm > maxDistanceKm || timeGapMinutes > maxTimeGapMinutes;
+                }
+
+                if (startsNewLine && currentLine.length > 0) {
+                    lines.push(currentLine);
+                    currentLine = [];
+                }
+
+                currentLine.push([point.latitude, point.longitude]);
+                previousPoint = point;
+            });
+
+            if (currentLine.length > 0) {
+                lines.push(currentLine);
+            }
+            return lines;
+        }
+
         function renderUser(user) {
             const existingLayer = userLayers.get(user.username);
             const visible = !existingLayer || map.hasLayer(existingLayer.group);
@@ -52,7 +102,7 @@
             }
 
             const group = L.layerGroup();
-            user.lines.forEach(line => {
+            buildLines(user.points, Number(maxDistanceInput.value)).forEach(line => {
                 if (line.length > 1) {
                     L.polyline(line, { color: user.color, weight: 4, opacity: 0.85 }).addTo(group);
                 }
@@ -80,6 +130,11 @@
                 map.fitBounds(bounds, { padding: [30, 30] });
             }
         }
+
+        maxDistanceInput.addEventListener('input', () => {
+            maxDistanceValue.textContent = maxDistanceInput.value;
+            users.forEach(renderUser);
+        });
 
         users.forEach((user, index) => {
             renderUser(user);
