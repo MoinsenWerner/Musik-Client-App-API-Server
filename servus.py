@@ -536,7 +536,7 @@ setattr(UserPosition, SPALTE_5, db.Column(db.Text, nullable=False))
     
     
 # ==========================================
-# TIMELINE & ACTION TRACKING ENDPUNKTE
+# TIMELINE & ACTION TRACKING ENDPUNKTE 
 # ==========================================
 
 def parse_custom_date(date_str):
