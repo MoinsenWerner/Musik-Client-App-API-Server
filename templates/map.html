@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>User-Positionen Karte</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; background: #111827; color: #f9fafb; }
+        .layout { display: grid; grid-template-columns: 320px 1fr; min-height: 100vh; }
+        aside { padding: 1rem; background: #1f2937; overflow-y: auto; }
+        #map { min-height: 100vh; }
+        .user-control { display: grid; grid-template-columns: auto 1fr auto; gap: 0.5rem; align-items: center; padding: 0.65rem 0; border-bottom: 1px solid #374151; }
+        .user-control label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .meta { color: #d1d5db; font-size: 0.9rem; line-height: 1.45; }
+        input[type="color"] { width: 2.6rem; height: 2rem; border: 0; background: transparent; cursor: pointer; }
+        @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } aside { max-height: 42vh; } #map { min-height: 58vh; } }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <aside>
+            <h1>Positionen</h1>
+            <p class="meta">Linien werden pro User nach Datum/Uhrzeit verbunden. Bei mehr als 2 km Abstand oder mehr als 60 Minuten Zeitabstand beginnt eine neue Linie.</p>
+            <div id="controls"></div>
+        </aside>
+        <div id="map"></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const users = {{ users | tojson }};
+        const map = L.map('map').setView([51.1657, 10.4515], 6);
+        const userLayers = new Map();
+        const controls = document.getElementById('controls');
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        function pointPopup(point) {
+            const mapsLink = point.maps_link ? `<br><a href="${point.maps_link}" target="_blank" rel="noopener">Maps-Link öffnen</a>` : '';
+            return `<strong>${point.username}</strong><br>${point.date} ${point.time}<br>${point.latitude}, ${point.longitude}${mapsLink}`;
+        }
+
+        function renderUser(user) {
+            const existingLayer = userLayers.get(user.username);
+            const visible = !existingLayer || map.hasLayer(existingLayer.group);
+            if (existingLayer) {
+                map.removeLayer(existingLayer.group);
+            }
+
+            const group = L.layerGroup();
+            user.lines.forEach(line => {
+                if (line.length > 1) {
+                    L.polyline(line, { color: user.color, weight: 4, opacity: 0.85 }).addTo(group);
+                }
+            });
+            user.points.forEach(point => {
+                L.circleMarker([point.latitude, point.longitude], {
+                    radius: 6,
+                    color: user.color,
+                    fillColor: user.color,
+                    fillOpacity: 0.9,
+                    weight: 2
+                }).bindPopup(pointPopup(point)).addTo(group);
+            });
+
+            userLayers.set(user.username, { group });
+            if (visible) {
+                group.addTo(map);
+            }
+        }
+
+        function fitMapToData() {
+            const bounds = [];
+            users.forEach(user => user.points.forEach(point => bounds.push([point.latitude, point.longitude])));
+            if (bounds.length > 0) {
+                map.fitBounds(bounds, { padding: [30, 30] });
+            }
+        }
+
+        users.forEach((user, index) => {
+            renderUser(user);
+
+            const row = document.createElement('div');
+            row.className = 'user-control';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = true;
+            checkbox.id = `user-visible-${index}`;
+            checkbox.addEventListener('change', () => {
+                const layer = userLayers.get(user.username).group;
+                checkbox.checked ? layer.addTo(map) : map.removeLayer(layer);
+            });
+
+            const label = document.createElement('label');
+            label.htmlFor = checkbox.id;
+            label.textContent = `${user.username} (${user.points.length})`;
+
+            const color = document.createElement('input');
+            color.type = 'color';
+            color.value = user.color;
+            color.addEventListener('input', () => {
+                user.color = color.value;
+                renderUser(user);
+            });
+
+            row.append(checkbox, label, color);
+            controls.appendChild(row);
+        });
+
+        if (users.length === 0) {
+            controls.textContent = 'Keine Positionsdaten gefunden.';
+        }
+        fitMapToData();
+    </script>
+</body>
+</html>

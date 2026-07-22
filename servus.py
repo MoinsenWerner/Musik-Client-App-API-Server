@@ -3,15 +3,17 @@ import secrets
 import time
 import logging
 import re
+import math
+from datetime import datetime
 from shutil import move
 from logging.handlers import RotatingFileHandler
 import requests
-from flask import Flask, request, jsonify, render_template_string, redirect, flash, make_response, abort, Response, send_from_directory
+from flask import Flask, request, jsonify, render_template_string, render_template, redirect, flash, make_response, abort, Response, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 import glob
 from packaging.version import parse as parse_version
-from werkzeug.utils import safe_join
+from werkzeug.utils import safe_join, secure_filename
 
 UPDATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "updates")
 os.makedirs(UPDATES_DIR, exist_ok=True)
@@ -333,6 +335,110 @@ def get_user_position_admin(wert0):
         )
 
     return Response("\n".join(output), mimetype="text/plain")
+
+
+def parse_position_datetime(date_str, time_str):
+    """Konvertiert Positionsdatum/-uhrzeit für Sortierung und Linienbildung."""
+    date_part = parse_custom_date(date_str)
+    time_part = parse_custom_time(time_str)
+    if not date_part or not time_part:
+        return None
+    return datetime.combine(date_part.date(), time_part.time())
+
+
+def haversine_distance_km(lat1, lon1, lat2, lon2):
+    """Berechnet den geographischen Abstand zwischen zwei Punkten in Kilometern."""
+    earth_radius_km = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(delta_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    )
+    return earth_radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def build_position_map_data():
+    """Liest Positionsdaten aus der Datenbank und bereitet Marker-/Linien-Daten für die Karte vor."""
+    grouped_points = {}
+
+    for row in UserPosition.query.all():
+        try:
+            latitude = float(getattr(row, SPALTE_1))
+            longitude = float(getattr(row, SPALTE_2))
+        except (TypeError, ValueError):
+            app.logger.warning(f"Ungültige Positionskoordinaten für Datensatz {row.id} übersprungen.")
+            continue
+
+        timestamp = parse_position_datetime(getattr(row, SPALTE_4), getattr(row, SPALTE_3))
+        if timestamp is None:
+            app.logger.warning(f"Ungültiger Positionszeitpunkt für Datensatz {row.id} übersprungen.")
+            continue
+
+        grouped_points.setdefault(row.username, []).append({
+            "id": row.id,
+            "username": row.username,
+            "latitude": latitude,
+            "longitude": longitude,
+            "date": getattr(row, SPALTE_4),
+            "time": getattr(row, SPALTE_3),
+            "timestamp": timestamp.isoformat(),
+            "maps_link": getattr(row, SPALTE_5),
+        })
+
+    users = []
+    palette = [
+        "#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c",
+        "#0891b2", "#be123c", "#4f46e5", "#65a30d", "#ca8a04",
+    ]
+
+    for index, username in enumerate(sorted(grouped_points)):
+        points = sorted(grouped_points[username], key=lambda point: point["timestamp"])
+        lines = []
+        current_line = []
+        previous_point = None
+
+        for point in points:
+            starts_new_line = False
+            if previous_point is not None:
+                distance_km = haversine_distance_km(
+                    previous_point["latitude"],
+                    previous_point["longitude"],
+                    point["latitude"],
+                    point["longitude"],
+                )
+                time_delta_seconds = (
+                    datetime.fromisoformat(point["timestamp"])
+                    - datetime.fromisoformat(previous_point["timestamp"])
+                ).total_seconds()
+                starts_new_line = distance_km > 2 or time_delta_seconds > 60 * 60
+
+            if starts_new_line and current_line:
+                lines.append(current_line)
+                current_line = []
+
+            current_line.append([point["latitude"], point["longitude"]])
+            previous_point = point
+
+        if current_line:
+            lines.append(current_line)
+
+        users.append({
+            "username": username,
+            "color": palette[index % len(palette)],
+            "points": points,
+            "lines": lines,
+        })
+
+    return users
+
+
+@app.route('/map', methods=['GET'])
+def position_map():
+    return render_template('map.html', users=build_position_map_data())
 
 
 # Dynamic Model Creation für flexible Spaltennamen
@@ -891,6 +997,83 @@ DASHBOARD_TEMPLATE = """
 # ==========================================
 # APK-Versionshandler / Autoupdater
 # ==========================================
+
+@app.route('/apk/online', methods=['GET', 'POST'])
+def upload_apk_online():
+    if request.method == 'GET':
+        return render_template('upload.html')
+
+    version = request.form.get('version', '').strip()
+    apk_file = request.files.get('apk_file')
+
+    if not re.fullmatch(r'\d+\.\d+\.\d+', version):
+        return render_template('upload.html', error='Bitte gib eine Versionsnummer im Format x.y.z an.', version=version), 400
+
+    if apk_file is None or apk_file.filename == '':
+        return render_template('upload.html', error='Bitte wähle eine .apk-Datei aus.', version=version), 400
+
+    original_filename = secure_filename(apk_file.filename)
+    if not original_filename.lower().endswith('.apk'):
+        return render_template('upload.html', error='Bitte wähle eine Datei mit der Endung .apk aus.', version=version), 400
+
+    n_filename = f"{version}.apk"
+    n_path = os.path.join(UPLOAD_FOLDER, n_filename)
+
+    bytes_received = 0
+    try:
+        with open(n_path, 'wb') as f:
+            while True:
+                chunk = apk_file.stream.read(1048576)
+                if not chunk:
+                    break
+                f.write(chunk)
+                bytes_received += len(chunk)
+    except Exception as e:
+        app.logger.error(f"Fehler beim Online-APK-Upload-Streaming: {str(e)}")
+        if os.path.exists(n_path):
+            os.remove(n_path)
+        return render_template('upload.html', error=f'Upload failed during streaming: {str(e)}', version=version), 500
+
+    if bytes_received == 0:
+        if os.path.exists(n_path):
+            os.remove(n_path)
+        return render_template('upload.html', error='Die hochgeladene Datei ist leer.', version=version), 400
+
+    app.logger.info(f"Online-APK erfolgreich gestreamt. Größe: {bytes_received} Bytes.")
+
+    # Ab hier startet derselbe Verarbeitungsprozess wie beim rohen APK-Upload.
+    l_filename, l_version_str = get_latest_apk_info()
+
+    if l_filename is None:
+        move(n_path, os.path.join(LATEST_FOLDER, n_filename))
+        return render_template('upload.html', success='Initial APK uploaded successfully as latest', version=''), 201
+
+    n_ver = parse_version(version)
+    l_ver = parse_version(l_version_str)
+
+    if n_ver > l_ver:
+        target_dir = os.path.join(VERSIONS_FOLDER, l_version_str)
+        os.makedirs(target_dir, exist_ok=True)
+        move(os.path.join(LATEST_FOLDER, l_filename), os.path.join(target_dir, l_filename))
+        save_version_to_db(l_version_str)
+        move(n_path, os.path.join(LATEST_FOLDER, n_filename))
+
+    elif n_ver < l_ver:
+        target_dir = os.path.join(VERSIONS_FOLDER, version)
+        os.makedirs(target_dir, exist_ok=True)
+        move(n_path, os.path.join(target_dir, n_filename))
+        save_version_to_db(version)
+
+    else:
+        suffix_version, target_dir = get_next_suffix_version(l_version_str)
+        os.makedirs(target_dir, exist_ok=True)
+        suffix_filename = f"{suffix_version}.apk"
+        move(os.path.join(LATEST_FOLDER, l_filename), os.path.join(target_dir, suffix_filename))
+        save_version_to_db(suffix_version)
+        move(n_path, os.path.join(LATEST_FOLDER, n_filename))
+
+    return render_template('upload.html', success='APK processed successfully', version=''), 200
+
 ## 1. Route: APK Upload (Akzeptiert rohen Binärstream von Tasker)
 @app.route('/apk/upload/<version>', methods=['POST'])
 def upload_apk(version):
