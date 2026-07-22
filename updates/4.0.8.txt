@@ -1,0 +1,2 @@
+• AutoNotification-Abhängigkeit entfernt 
+• Bugfixes bei den Benachrichtigungen

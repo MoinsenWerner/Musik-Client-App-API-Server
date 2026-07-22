@@ -1,0 +1,3 @@
+• App-Start Ladeanimation hinzugefügt 
+• Bugfixes bei den Autoupdates
+• Auto-Download von benötigten externen Ressourcen hinzugefügt

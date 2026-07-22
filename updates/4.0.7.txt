@@ -1,0 +1,3 @@
+• Benachrichtigungskategorien wurden geändert 
+• Verhalten der Benachrichtigungen angepasst 
+• Autoupdate On/Off Schalter in Einstellungen hinzugefügt 

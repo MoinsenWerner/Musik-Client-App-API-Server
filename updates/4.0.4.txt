@@ -1,0 +1,2 @@
+• Autoupdate-System weiter ausgebaut 
+• Kleinere Bugfixes

@@ -1,0 +1,6 @@
+------WebKitFormBoundaryKf16biCKs9jt3Z0L
+Content-Disposition: form-data; name="file"; filename="info.txt"
+Content-Type: text/plain
+
+• Testen des Hochladens der APKs und Versionsinfos außerhalb der Tasker-Umgebung | Test Nr.2 für Version 3.9.9
+------WebKitFormBoundaryKf16biCKs9jt3Z0L--

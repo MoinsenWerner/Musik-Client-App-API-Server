@@ -1,0 +1,8 @@
+• Update-Tracker hinzugefügt 
+• Error-Handling von Soft-Errors teilweise hinzugefügt  
+• Zwischenspeichen von Soft-Errors hinzugefügt 
+• Reportsystem für zwischengespeicherte Soft-Errors hinzugefügt
+• Fehler bei der Playlistauswahl behoben 
+• Fehler beim Abfragen des Playlistinhaltes behoben 
+• Dateipfad fürs Zwischenspeichen der Song-Bilder geändert, sodass sie nicht mehr in der Galerie angezeigt werden
+• Die Buttons "Zur Warteschlange hinzufügen" haben ihre Funktion erhalten, sind aber noch in der Alpha-Phase

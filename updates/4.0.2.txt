@@ -1,0 +1,5 @@
+• Automatisch abrufen der neusten Version hinzugefügt 
+• Update Benachrichtigung hinzugefügt 
+• Update Reminder hinzugefügt 
+• Herunterladen der neusten Version hinzugefügt 
+• installieren der heruntergeladen Version hinzugefügt 
