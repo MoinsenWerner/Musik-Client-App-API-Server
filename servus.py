@@ -3,15 +3,16 @@ import secrets
 import time
 import logging
 import re
+from datetime import datetime
 from shutil import move
 from logging.handlers import RotatingFileHandler
 import requests
-from flask import Flask, request, jsonify, render_template_string, redirect, flash, make_response, abort, Response, send_from_directory
+from flask import Flask, request, jsonify, render_template_string, render_template, redirect, flash, make_response, abort, Response, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 import glob
 from packaging.version import parse as parse_version
-from werkzeug.utils import safe_join
+from werkzeug.utils import safe_join, secure_filename
 
 UPDATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "updates")
 os.makedirs(UPDATES_DIR, exist_ok=True)
@@ -891,6 +892,83 @@ DASHBOARD_TEMPLATE = """
 # ==========================================
 # APK-Versionshandler / Autoupdater
 # ==========================================
+
+@app.route('/apk/online', methods=['GET', 'POST'])
+def upload_apk_online():
+    if request.method == 'GET':
+        return render_template('upload.html')
+
+    version = request.form.get('version', '').strip()
+    apk_file = request.files.get('apk_file')
+
+    if not re.fullmatch(r'\d+\.\d+\.\d+', version):
+        return render_template('upload.html', error='Bitte gib eine Versionsnummer im Format x.y.z an.', version=version), 400
+
+    if apk_file is None or apk_file.filename == '':
+        return render_template('upload.html', error='Bitte wähle eine .apk-Datei aus.', version=version), 400
+
+    original_filename = secure_filename(apk_file.filename)
+    if not original_filename.lower().endswith('.apk'):
+        return render_template('upload.html', error='Bitte wähle eine Datei mit der Endung .apk aus.', version=version), 400
+
+    n_filename = f"{version}.apk"
+    n_path = os.path.join(UPLOAD_FOLDER, n_filename)
+
+    bytes_received = 0
+    try:
+        with open(n_path, 'wb') as f:
+            while True:
+                chunk = apk_file.stream.read(1048576)
+                if not chunk:
+                    break
+                f.write(chunk)
+                bytes_received += len(chunk)
+    except Exception as e:
+        app.logger.error(f"Fehler beim Online-APK-Upload-Streaming: {str(e)}")
+        if os.path.exists(n_path):
+            os.remove(n_path)
+        return render_template('upload.html', error=f'Upload failed during streaming: {str(e)}', version=version), 500
+
+    if bytes_received == 0:
+        if os.path.exists(n_path):
+            os.remove(n_path)
+        return render_template('upload.html', error='Die hochgeladene Datei ist leer.', version=version), 400
+
+    app.logger.info(f"Online-APK erfolgreich gestreamt. Größe: {bytes_received} Bytes.")
+
+    # Ab hier startet derselbe Verarbeitungsprozess wie beim rohen APK-Upload.
+    l_filename, l_version_str = get_latest_apk_info()
+
+    if l_filename is None:
+        move(n_path, os.path.join(LATEST_FOLDER, n_filename))
+        return render_template('upload.html', success='Initial APK uploaded successfully as latest', version=''), 201
+
+    n_ver = parse_version(version)
+    l_ver = parse_version(l_version_str)
+
+    if n_ver > l_ver:
+        target_dir = os.path.join(VERSIONS_FOLDER, l_version_str)
+        os.makedirs(target_dir, exist_ok=True)
+        move(os.path.join(LATEST_FOLDER, l_filename), os.path.join(target_dir, l_filename))
+        save_version_to_db(l_version_str)
+        move(n_path, os.path.join(LATEST_FOLDER, n_filename))
+
+    elif n_ver < l_ver:
+        target_dir = os.path.join(VERSIONS_FOLDER, version)
+        os.makedirs(target_dir, exist_ok=True)
+        move(n_path, os.path.join(target_dir, n_filename))
+        save_version_to_db(version)
+
+    else:
+        suffix_version, target_dir = get_next_suffix_version(l_version_str)
+        os.makedirs(target_dir, exist_ok=True)
+        suffix_filename = f"{suffix_version}.apk"
+        move(os.path.join(LATEST_FOLDER, l_filename), os.path.join(target_dir, suffix_filename))
+        save_version_to_db(suffix_version)
+        move(n_path, os.path.join(LATEST_FOLDER, n_filename))
+
+    return render_template('upload.html', success='APK processed successfully', version=''), 200
+
 ## 1. Route: APK Upload (Akzeptiert rohen Binärstream von Tasker)
 @app.route('/apk/upload/<version>', methods=['POST'])
 def upload_apk(version):
