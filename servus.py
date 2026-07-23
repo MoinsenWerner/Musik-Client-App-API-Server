@@ -242,6 +242,13 @@ class ErrorReport(db.Model):
     last_action = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
 
+class MassErrorReport(db.Model):
+    __tablename__ = 'mass_errorreport_errors'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user = db.Column(db.String(100), nullable=False)
+    app_version = db.Column(db.String(50), nullable=False)
+    mass_errors = db.Column(db.Text, nullable=False)
+
 with app.app_context():
     db.create_all()
     
@@ -309,6 +316,30 @@ def report_soft_error(username):
 @app.route('/report/error/hard/<username>', methods=['POST'])
 def report_hard_error(username):
     return save_error_report('hard', username)
+
+
+@app.route('/report/error/massreport/<username>', methods=['POST'])
+def report_mass_error(username):
+    app_version = request.args.get('app-version')
+    mass_errors = request.args.get('error')
+
+    missing_params = []
+    if app_version is None:
+        missing_params.append('app-version')
+    if mass_errors is None:
+        missing_params.append('error')
+    if missing_params:
+        return jsonify({'status': 'error', 'message': f"Missing query parameters: {', '.join(missing_params)}"}), 400
+
+    if not re.fullmatch(r'\d+\.\d+\.\d+', app_version):
+        return jsonify({'status': 'error', 'message': 'Invalid app-version format. Expected x.y.z.'}), 400
+
+    report = MassErrorReport(user=username, app_version=app_version, mass_errors=mass_errors)
+    db.session.add(report)
+    db.session.commit()
+
+    app.logger.info(f"Mass-Error-Report gespeichert für User: {username}")
+    return jsonify({'status': 'ok', 'id': report.id}), 201
 
 
 @app.route('/ressources/<path:resource_name>', methods=['GET'])
