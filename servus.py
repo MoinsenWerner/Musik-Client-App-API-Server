@@ -54,6 +54,7 @@ db = SQLAlchemy(app)
 # ADVANCED LOGGING KONFIGURATION
 # ==========================================
 log_file_path = os.path.join(BASE_DIR, "log", "api.log.txt")
+os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 file_handler = RotatingFileHandler(log_file_path, maxBytes=10485760, backupCount=5, encoding='utf-8')
 log_formatter = logging.Formatter(
     '[%(asctime)s] %(levelname)s in %(module)s: %(message)s',
@@ -195,6 +196,7 @@ class ClientCredentials(db.Model):
     name = db.Column(db.String(100), nullable=False, default="Unbekannt")
     role = db.Column(db.String(20), nullable=False)
     allowed_scopes = db.Column(db.String(200), nullable=False)
+    token_lifetime_seconds = db.Column(db.Integer, nullable=False, default=86400)
 
 class AuthorizationCode(db.Model):
     __tablename__ = 'authorization_codes'
@@ -251,6 +253,15 @@ class MassErrorReport(db.Model):
 
 with app.app_context():
     db.create_all()
+    client_columns = {
+        column[1] for column in db.session.execute(db.text("PRAGMA table_info(client_credentials)"))
+    }
+    if 'token_lifetime_seconds' not in client_columns:
+        db.session.execute(db.text(
+            "ALTER TABLE client_credentials "
+            "ADD COLUMN token_lifetime_seconds INTEGER NOT NULL DEFAULT 86400"
+        ))
+        db.session.commit()
     
 
 # Absoluter Pfad zum Basis-Ressourcenordner
@@ -838,17 +849,31 @@ def verify_gateway_token(headers):
     auth_header = headers.get('Authorization')
     if not auth_header or not auth_header.startswith('Bearer '):
         app.logger.warning("Verifizierung fehlgeschlagen: Authorization Header fehlt oder ist kein Bearer-Token.")
-        return False, "Missing or malformed Authorization header"
+        return False, {
+            "error": "unauthorized",
+            "message": "Missing or malformed Authorization header",
+            "reauthenticate": True,
+        }
     
     token_str = auth_header.split(' ')[1]
     token_entry = OAuthToken.query.filter_by(access_token=token_str).first()
     
     if not token_entry:
         app.logger.warning(f"Verifizierung fehlgeschlagen: Token '{token_str}' existiert nicht in DB.")
-        return False, "Invalid token"
+        return False, {
+            "error": "invalid_token",
+            "message": "The access token is invalid.",
+            "reauthenticate": True,
+        }
     if token_entry.expires_at < time.time():
         app.logger.warning(f"Verifizierung fehlgeschlagen: Token von Client '{token_entry.client_id}' ist abgelaufen.")
-        return False, "Token expired"
+        return False, {
+            "error": "token_expired",
+            "message": "The access token has expired. Authenticate again to obtain a new token.",
+            "reauthenticate": True,
+            "token_endpoint": "/token",
+            "expired_at": token_entry.expires_at,
+        }
         
     app.logger.debug(f"Gateway-Token verifiziert für Client-ID: {token_entry.client_id}")
     return True, token_entry
@@ -858,7 +883,7 @@ def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None
     app.logger.debug(f"Verarbeite Proxy-Request für Pfad: {target_path} [{method}]")
     is_valid, token_or_err = verify_gateway_token(request.headers)
     if not is_valid:
-        return jsonify({"error": "unauthorized", "message": token_or_err}), 401
+        return jsonify(token_or_err), 401
 
     cfg = get_config()
     app.logger.debug(f"Aktueller Gateway-Modus: {cfg.gateway_mode}")
@@ -1053,6 +1078,10 @@ DASHBOARD_TEMPLATE = """
                             <option value="Server">Server (Scopes: server, hb-server)</option>
                         </select>
                     </div>
+                    <div>
+                        <label class="block text-xs font-medium uppercase tracking-wider text-gray-400 mb-1">Schlüssel-Gültigkeit (Minuten)</label>
+                        <input type="number" name="token_lifetime_minutes" min="1" max="525600" value="1440" required class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:border-blue-500">
+                    </div>
                     <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2 rounded transition shadow-lg">
                         Zugangsdaten generieren
                     </button>
@@ -1070,6 +1099,7 @@ DASHBOARD_TEMPLATE = """
                                 <th class="p-3">Client Secret</th>
                                 <th class="p-3">Rolle</th>
                                 <th class="p-3">Zugelassene Scopes</th>
+                                <th class="p-3">Schlüssel-Gültigkeit</th>
                                 <th class="p-3 text-right">Aktion</th>
                             </tr>
                         </thead>
@@ -1088,6 +1118,13 @@ DASHBOARD_TEMPLATE = """
                                     </span>
                                 </td>
                                 <td class="p-3 font-mono text-xs text-gray-400">{{ client.allowed_scopes }}</td>
+                                <td class="p-3">
+                                    <form action="/dashboard/client/token-lifetime/{{ client.id }}" method="POST" class="flex items-center gap-2">
+                                        <input type="number" name="token_lifetime_minutes" min="1" max="525600" value="{{ (client.token_lifetime_seconds / 60)|int }}" required class="w-24 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-white">
+                                        <span class="text-xs text-gray-400">Min.</span>
+                                        <button type="submit" class="text-blue-400 hover:text-blue-300 font-medium">Speichern</button>
+                                    </form>
+                                </td>
                                 <td class="p-3 text-right">
                                     <a href="/dashboard/client/delete/{{ client.id }}" class="text-red-400 hover:text-red-300 font-medium transition" onclick="return confirm('Client unwiderruflich löschen?')">Löschen</a>
                                 </td>
@@ -1613,11 +1650,12 @@ def token():
         return jsonify({"error": "unsupported_grant_type"}), 400
 
     access_token = "hbc_" + secrets.token_urlsafe(64)
+    token_lifetime = client.token_lifetime_seconds or 86400
     token_entry = OAuthToken(
         access_token=access_token,
         client_id=client_id,
         scope=client.allowed_scopes,
-        expires_at=int(time.time()) + 3600 * 24
+        expires_at=int(time.time()) + token_lifetime
     )
     db.session.add(token_entry)
     db.session.commit()
@@ -1626,7 +1664,7 @@ def token():
     return jsonify({
         "access_token": access_token,
         "token_type": "Bearer",
-        "expires_in": 3600 * 24,
+        "expires_in": token_lifetime,
         "scope": client.allowed_scopes
     })
 
@@ -1720,6 +1758,14 @@ def create_client():
     custom_id = request.form.get('custom_client_id', '').strip()
     custom_secret = request.form.get('custom_client_secret', '').strip()
 
+    try:
+        token_lifetime_minutes = int(request.form.get('token_lifetime_minutes', '1440'))
+    except ValueError:
+        token_lifetime_minutes = 0
+    if not 1 <= token_lifetime_minutes <= 525600:
+        flash("Die Schlüssel-Gültigkeit muss zwischen 1 und 525600 Minuten liegen.", "error")
+        return redirect('/dashboard')
+
     if role not in ROLE_SCOPES:
         flash("Ungültige Rolle ausgewählt.", "error")
         return redirect('/dashboard')
@@ -1744,13 +1790,36 @@ def create_client():
         client_secret_plain=raw_client_secret,
         name=name,
         role=role,
-        allowed_scopes=scopes_str
+        allowed_scopes=scopes_str,
+        token_lifetime_seconds=token_lifetime_minutes * 60,
     )
     db.session.add(new_client)
     db.session.commit()
 
     app.logger.info(f"Neuer API-Client über Dashboard generiert. ID: {raw_client_id}, Rolle: {role}, Zuordnung: {name}")
     flash(f"Client erfolgreich erstellt!<br><b>Zuordnung:</b> {name}<br><b>Client-ID:</b> <code class='bg-gray-900 px-1 text-yellow-400 font-mono'>{raw_client_id}</code><br><b>Client-Secret:</b> <code class='bg-gray-900 px-1 text-emerald-400 font-mono'>{raw_client_secret}</code>", "success")
+    return redirect('/dashboard')
+
+
+@app.route('/dashboard/client/token-lifetime/<int:id>', methods=['POST'])
+def update_client_token_lifetime(id):
+    client = ClientCredentials.query.get_or_404(id)
+    try:
+        token_lifetime_minutes = int(request.form.get('token_lifetime_minutes', ''))
+    except ValueError:
+        token_lifetime_minutes = 0
+
+    if not 1 <= token_lifetime_minutes <= 525600:
+        flash("Die Schlüssel-Gültigkeit muss zwischen 1 und 525600 Minuten liegen.", "error")
+        return redirect('/dashboard')
+
+    client.token_lifetime_seconds = token_lifetime_minutes * 60
+    db.session.commit()
+    app.logger.info(
+        f"Token-Gültigkeit für Client {client.client_id} auf "
+        f"{token_lifetime_minutes} Minuten geändert."
+    )
+    flash(f"Schlüssel-Gültigkeit für {client.name} gespeichert.", "success")
     return redirect('/dashboard')
 
 @app.route('/dashboard/client/delete/<int:id>', methods=['GET'])
