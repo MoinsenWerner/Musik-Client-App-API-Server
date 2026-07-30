@@ -1822,6 +1822,63 @@ def update_client_token_lifetime(id):
     flash(f"Schlüssel-Gültigkeit für {client.name} gespeichert.", "success")
     return redirect('/dashboard')
 
+
+def route_example_url(rule):
+    """Ersetzt dynamische URL-Parameter durch anklickbare Beispielwerte."""
+    examples = {
+        'id': '1',
+        'username': 'username',
+        'version': '1.0.0',
+        'song_id': 'song-id',
+    }
+
+    def replace_parameter(match):
+        parameter = match.group(1).split(':')[-1]
+        return examples.get(parameter, 'value')
+
+    return re.sub(r'<([^>]+)>', replace_parameter, rule)
+
+
+def collect_routes():
+    """Erfasst bei jedem Aufruf alle aktuell registrierten Anwendungsrouten."""
+    routes = []
+    for rule in sorted(app.url_map.iter_rules(), key=lambda item: item.rule):
+        if rule.endpoint == 'static':
+            continue
+        methods = sorted(rule.methods - {'HEAD', 'OPTIONS'})
+        view_function = app.view_functions.get(rule.endpoint)
+        description = (
+            view_function.__doc__.strip().splitlines()[0]
+            if view_function and view_function.__doc__
+            else f"Endpunkt {rule.endpoint.replace('_', ' ')}"
+        )
+        routes.append({
+            'rule': rule.rule,
+            'url': route_example_url(rule.rule),
+            'methods': methods,
+            'description': description,
+        })
+    return routes
+
+
+@app.route('/routes', methods=['GET'])
+def list_routes():
+    """Zeigt alle aktuell in der Flask-Anwendung registrierten Routen an."""
+    routes = collect_routes()
+    requested_format = request.args.get('format')
+    wants_html = requested_format == 'html' or (
+        requested_format != 'text'
+        and request.accept_mimetypes.best_match(['text/html', 'text/plain']) == 'text/html'
+    )
+    if wants_html:
+        return render_template('routes.html', routes=routes)
+
+    return Response(
+        ';'.join(route['rule'] for route in routes),
+        content_type='text/plain; charset=utf-8',
+    )
+
+
 @app.route('/dashboard/client/delete/<int:id>', methods=['GET'])
 def delete_client(id):
     client = ClientCredentials.query.get_or_404(id)

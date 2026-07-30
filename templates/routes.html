@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>API-Routen</title>
+    <style>
+        :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+        body { margin: 0; background: #111827; color: #e5e7eb; }
+        main { width: min(1100px, calc(100% - 2rem)); margin: 3rem auto; }
+        h1 { margin-bottom: .4rem; }
+        .intro { margin-top: 0; color: #9ca3af; }
+        .routes { display: grid; gap: .75rem; margin-top: 2rem; }
+        .route { padding: 1rem; border: 1px solid #374151; border-radius: .7rem; background: #1f2937; }
+        .route a { color: #60a5fa; font: 600 1rem ui-monospace, monospace; text-decoration: none; overflow-wrap: anywhere; }
+        .route a:hover { color: #93c5fd; text-decoration: underline; }
+        .details { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .55rem; color: #d1d5db; }
+        .methods { color: #34d399; font: 700 .8rem ui-monospace, monospace; }
+        .text-link { display: inline-block; margin-top: 1rem; color: #9ca3af; }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Registrierte API-Routen</h1>
+        <p class="intro">Diese Liste wird bei jedem Aufruf direkt aus der Flask-Anwendung erzeugt.</p>
+        <a class="text-link" href="{{ url_for('list_routes', format='text') }}">Semikolon-getrennte Textausgabe</a>
+
+        <section class="routes">
+            {% for route in routes %}
+                <article class="route">
+                    <a href="{{ route.url }}" target="_blank" rel="noopener noreferrer">{{ route.rule }}</a>
+                    <div class="details">
+                        <span class="methods">{{ route.methods | join(', ') }}</span>
+                        <span>{{ route.description }}</span>
+                    </div>
+                </article>
+            {% endfor %}
+        </section>
+    </main>
+</body>
+</html>
