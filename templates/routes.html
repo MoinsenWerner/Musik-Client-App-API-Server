@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>API-Routen</title>
+    <style>
+        :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #111827; color: #e5e7eb; }
+        main { width: min(1200px, calc(100% - 2rem)); margin: 3rem auto; }
+        h1 { margin-bottom: .4rem; }
+        .intro, .empty { color: #9ca3af; }
+        .toolbar { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(13rem, .35fr); gap: .8rem; margin: 1.5rem 0; }
+        input, select { width: 100%; padding: .8rem; color: #f9fafb; background: #1f2937; border: 1px solid #4b5563; border-radius: .55rem; }
+        input:focus, select:focus { outline: 2px solid #3b82f6; border-color: transparent; }
+        .summary { color: #9ca3af; margin-bottom: 1rem; }
+        .tree, .tree ul { list-style: none; padding: 0; }
+        .tree ul { margin: .7rem 0 .7rem 1.5rem; padding-left: 1rem; border-left: 2px solid #374151; }
+        .group-title { color: #c4b5fd; font: 700 .9rem ui-monospace, monospace; margin: .8rem 0; }
+        .route { padding: 1rem; margin: .65rem 0; border: 1px solid #374151; border-radius: .7rem; background: #1f2937; }
+        .route a { color: #60a5fa; font: 600 1rem ui-monospace, monospace; text-decoration: none; overflow-wrap: anywhere; }
+        .route a:hover { color: #93c5fd; text-decoration: underline; }
+        .details, .badges { display: flex; flex-wrap: wrap; gap: .5rem .8rem; margin-top: .55rem; align-items: center; }
+        .methods, .badge { padding: .15rem .4rem; border-radius: .3rem; font: 700 .75rem ui-monospace, monospace; }
+        .methods { color: #34d399; background: #064e3b; }
+        .badge { color: #bfdbfe; background: #1e3a8a; }
+        .auth { color: #fde68a; background: #78350f; }
+        .parameters { margin-top: .9rem; border-top: 1px solid #374151; padding-top: .7rem; }
+        .parameters summary { cursor: pointer; color: #d1d5db; font-weight: 600; }
+        .parameter { display: grid; grid-template-columns: minmax(8rem, .25fr) 1fr 1fr; gap: .7rem; padding: .7rem 0; border-bottom: 1px solid #374151; }
+        .parameter:last-child { border-bottom: 0; }
+        .parameter-name { color: #f9a8d4; font-family: ui-monospace, monospace; }
+        .required { color: #fca5a5; }
+        .optional { color: #86efac; }
+        .text-link { color: #9ca3af; }
+        [hidden] { display: none !important; }
+        @media (max-width: 700px) { .toolbar, .parameter { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Registrierte API-Routen</h1>
+        <p class="intro">Live-Suche, Filter und automatisch gruppierte Routen aus der Flask-Anwendung.</p>
+        <a class="text-link" href="{{ url_for('list_routes', format='text') }}">Semikolon-getrennte Textausgabe</a>
+
+        <div class="toolbar">
+            <input id="route-search" type="search" placeholder="Routen, Beschreibungen oder Parameter durchsuchen …" autocomplete="off">
+            <select id="route-filter">
+                <option value="all">Alle Routen</option>
+                <option value="browser">Browser kompatibel</option>
+                <option value="get">GET-Request</option>
+                <option value="post">POST-Request</option>
+                <option value="authentication">Authentification</option>
+            </select>
+        </div>
+        <p id="route-summary" class="summary"></p>
+        <div id="route-list"></div>
+        <p id="empty-state" class="empty" hidden>Keine passende Route gefunden.</p>
+    </main>
+
+    <script>
+        const routes = {{ routes | tojson }};
+        const list = document.getElementById('route-list');
+        const search = document.getElementById('route-search');
+        const filter = document.getElementById('route-filter');
+        const summary = document.getElementById('route-summary');
+        const emptyState = document.getElementById('empty-state');
+
+        function routeMatches(route, term, selectedFilter) {
+            const searchable = JSON.stringify(route).toLocaleLowerCase('de');
+            const matchesSearch = !term || searchable.includes(term);
+            const matchesFilter = selectedFilter === 'all'
+                || (selectedFilter === 'browser' && route.browser_compatible)
+                || (selectedFilter === 'get' && route.methods.includes('GET'))
+                || (selectedFilter === 'post' && route.methods.includes('POST'))
+                || (selectedFilter === 'authentication' && route.authentication);
+            return matchesSearch && matchesFilter;
+        }
+
+        function parameterMarkup(parameter) {
+            const requirement = parameter.required ? 'Pflichtangabe' : 'Optional';
+            const requirementClass = parameter.required ? 'required' : 'optional';
+            return `<div class="parameter">
+                <div><span class="parameter-name">${escapeHtml(parameter.name)}</span><br><small>${escapeHtml(parameter.location)}</small></div>
+                <div><span class="${requirementClass}">${requirement}</span><br>${escapeHtml(parameter.purpose)}</div>
+                <div><strong>Format:</strong><br>${escapeHtml(parameter.format)}</div>
+            </div>`;
+        }
+
+        function routeMarkup(route) {
+            const parameterSection = route.parameters.length
+                ? `<details class="parameters"><summary>Parameter (${route.parameters.length})</summary>${route.parameters.map(parameterMarkup).join('')}</details>`
+                : '<div class="parameters optional">Keine Parameter erforderlich.</div>';
+            return `<article class="route">
+                <a href="${escapeHtml(route.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(route.rule)}</a>
+                <div class="details"><span class="methods">${route.methods.join(', ')}</span><span>${escapeHtml(route.description)}</span></div>
+                <div class="badges">${route.browser_compatible ? '<span class="badge">Browser kompatibel</span>' : ''}${route.authentication ? '<span class="badge auth">Authentification</span>' : ''}</div>
+                ${parameterSection}
+            </article>`;
+        }
+
+        function escapeHtml(value) {
+            return String(value).replace(/[&<>'"]/g, character => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'}[character]));
+        }
+
+        function buildTree(items) {
+            const root = { children: new Map(), route: null, path: '' };
+            items.forEach(route => {
+                let node = root;
+                route.rule.split('/').filter(Boolean).forEach(segment => {
+                    if (!node.children.has(segment)) {
+                        node.children.set(segment, { children: new Map(), route: null, path: `${node.path}/${segment}` });
+                    }
+                    node = node.children.get(segment);
+                });
+                node.route = route;
+            });
+            return root;
+        }
+
+        function treeMarkup(node, isRoot = false) {
+            const children = [...node.children.values()];
+            const content = children.map(child => {
+                const route = child.route ? routeMarkup(child.route) : '';
+                const group = child.children.size
+                    ? `<div class="group-title">${escapeHtml(child.path)} Routes</div>${treeMarkup(child)}`
+                    : '';
+                return `<li>${route}${group}</li>`;
+            }).join('');
+            return `<ul class="${isRoot ? 'tree' : ''}">${content}</ul>`;
+        }
+
+        function renderRoutes() {
+            const term = search.value.trim().toLocaleLowerCase('de');
+            const selectedFilter = filter.value;
+            const matches = routes.filter(route => routeMatches(route, term, selectedFilter));
+            const unfiltered = !term && selectedFilter === 'all';
+            list.innerHTML = unfiltered
+                ? treeMarkup(buildTree(matches), true)
+                : matches.map(routeMarkup).join('');
+            summary.textContent = `${matches.length} von ${routes.length} Routen angezeigt`;
+            emptyState.hidden = matches.length !== 0;
+        }
+
+        search.addEventListener('input', renderRoutes);
+        filter.addEventListener('change', renderRoutes);
+        renderRoutes();
+    </script>
+</body>
+</html>
