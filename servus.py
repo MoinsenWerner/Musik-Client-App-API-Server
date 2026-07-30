@@ -1,4 +1,6 @@
 import os
+import ast
+import inspect
 import secrets
 import time
 import logging
@@ -1839,6 +1841,89 @@ def route_example_url(rule):
     return re.sub(r'<([^>]+)>', replace_parameter, rule)
 
 
+PARAMETER_DETAILS = {
+    'username': ('Benutzername, dem der Request zugeordnet wird.', 'Freier Text als URL-Pfadsegment'),
+    'id': ('Eindeutige numerische ID des Datensatzes.', 'Positive Ganzzahl'),
+    'version': ('Versionsnummer der App oder APK.', 'x.y.z, zum Beispiel 4.1.0'),
+    'app-version': ('Version der meldenden App.', 'x.y.z, zum Beispiel 4.1.0'),
+    'error': ('Fehlermeldung beziehungsweise Fehlerprotokoll.', 'URL-kodierter Freitext; Sonderzeichen und Zeilenumbrüche erlaubt'),
+    'error_task': ('Task oder Arbeitsschritt, bei dem der Fehler auftrat.', 'URL-kodierter Freitext'),
+    'date': ('Datum des Ereignisses.', 'dd.mm.yy oder dd.mm.yyyy'),
+    'time': ('Uhrzeit des Ereignisses.', 'hh.mm'),
+    'last-action': ('Zuletzt ausgeführte Aktion.', 'URL-kodierter Freitext'),
+    'client_id': ('OAuth-Client-ID.', 'Textwert der registrierten Client-ID'),
+    'client_secret': ('OAuth-Client-Secret.', 'Geheimer Textwert'),
+    'grant_type': ('Verwendeter OAuth-Grant.', 'authorization_code oder client_credentials'),
+    'redirect_uri': ('Zieladresse nach der Autorisierung.', 'Erlaubte absolute HTTPS-URL'),
+    'scope': ('Angeforderte Berechtigungen.', 'Leerzeichengetrennte Scope-Liste'),
+    'state': ('Vom Client gesetzter OAuth-Statuswert.', 'Beliebiger URL-kodierter Text'),
+    'code': ('Kurzlebiger OAuth-Autorisierungscode.', 'Vom /authorize-Endpunkt ausgegebener Textwert'),
+    'song_id': ('Spotify-ID des Songs.', 'Spotify Track-ID als Text'),
+    'value': ('Wert für die gewählte Aktion.', 'Vom Endpunkt abhängiger Textwert'),
+    'format': ('Erzwingt das Ausgabeformat der Routenliste.', 'html oder text'),
+    'token_lifetime_minutes': ('Gültigkeitsdauer eines Access-Tokens.', 'Ganzzahl zwischen 1 und 525600'),
+    'apk_file': ('APK-Datei, die hochgeladen wird.', 'Multipart-Datei mit Endung .apk'),
+}
+
+ROUTE_PARAMETER_OVERRIDES = {
+    'report_soft_error': [('query', name, True) for name in ('app-version', 'error_task', 'error', 'date', 'time', 'last-action')],
+    'report_hard_error': [('query', name, True) for name in ('app-version', 'error_task', 'error', 'date', 'time', 'last-action')],
+    'upload_apk_online': [('form', 'version', True), ('file', 'apk_file', True)],
+    'list_routes': [('query', 'format', False)],
+}
+
+
+def extract_request_parameters(view_function):
+    """Liest Query-, Formular- und Datei-Parameter direkt aus einer View-Funktion."""
+    parameters = []
+    try:
+        tree = ast.parse(inspect.getsource(view_function))
+    except (OSError, TypeError, IndentationError, SyntaxError):
+        return parameters
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        owner = node.func.value
+        if not isinstance(owner, ast.Attribute) or not isinstance(owner.value, ast.Name):
+            continue
+        if owner.value.id != 'request' or node.func.attr != 'get' or not node.args:
+            continue
+        if owner.attr not in {'args', 'form', 'files'}:
+            continue
+        if not isinstance(node.args[0], ast.Constant) or not isinstance(node.args[0].value, str):
+            continue
+        parameter_type = {'args': 'query', 'form': 'form', 'files': 'file'}[owner.attr]
+        required = len(node.args) == 1 or (
+            len(node.args) > 1
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value is None
+        )
+        parameters.append((parameter_type, node.args[0].value, required))
+    return parameters
+
+
+def describe_parameter(parameter_type, name, required, converter=None):
+    purpose, value_format = PARAMETER_DETAILS.get(
+        name,
+        (f"Wert für den Parameter {name}.", 'Textwert; Details richten sich nach dem Endpunkt'),
+    )
+    if parameter_type == 'path' and converter:
+        value_format = {
+            'int': 'Ganzzahl als URL-Pfadsegment',
+            'float': 'Dezimalzahl als URL-Pfadsegment',
+            'path': 'URL-Pfad, darf Schrägstriche enthalten',
+            'string': value_format,
+        }.get(converter, value_format)
+    return {
+        'name': name,
+        'location': parameter_type,
+        'required': required,
+        'purpose': purpose,
+        'format': value_format,
+    }
+
+
 def collect_routes():
     """Erfasst bei jedem Aufruf alle aktuell registrierten Anwendungsrouten."""
     routes = []
@@ -1847,16 +1932,41 @@ def collect_routes():
             continue
         methods = sorted(rule.methods - {'HEAD', 'OPTIONS'})
         view_function = app.view_functions.get(rule.endpoint)
+        try:
+            source = inspect.getsource(view_function) if view_function else ''
+        except (OSError, TypeError):
+            source = ''
         description = (
             view_function.__doc__.strip().splitlines()[0]
             if view_function and view_function.__doc__
             else f"Endpunkt {rule.endpoint.replace('_', ' ')}"
+        )
+        parameters = []
+        for converter, name in re.findall(r'<(?:(\w+):)?(\w+)>', rule.rule):
+            parameters.append(describe_parameter('path', name, True, converter or 'string'))
+        detected_parameters = list(ROUTE_PARAMETER_OVERRIDES.get(rule.endpoint, []))
+        detected_parameters.extend(extract_request_parameters(view_function) if view_function else [])
+        known_parameters = {(item['location'], item['name']) for item in parameters}
+        for parameter_type, name, required in detected_parameters:
+            if (parameter_type, name) not in known_parameters:
+                parameters.append(describe_parameter(parameter_type, name, required))
+                known_parameters.add((parameter_type, name))
+        authentication = (
+            'execute_proxy_request' in source
+            or rule.rule in {'/authorize', '/token'}
         )
         routes.append({
             'rule': rule.rule,
             'url': route_example_url(rule.rule),
             'methods': methods,
             'description': description,
+            'parameters': parameters,
+            'authentication': authentication,
+            'browser_compatible': (
+                'GET' in methods
+                and not authentication
+                and not any(item['required'] for item in parameters)
+            ),
         })
     return routes
 
