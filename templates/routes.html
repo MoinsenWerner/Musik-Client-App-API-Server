@@ -17,7 +17,9 @@
         .summary { color: #9ca3af; margin-bottom: 1rem; }
         .tree, .tree ul { list-style: none; padding: 0; }
         .tree ul { margin: .7rem 0 .7rem 1.5rem; padding-left: 1rem; border-left: 2px solid #374151; }
-        .group-title { color: #c4b5fd; font: 700 .9rem ui-monospace, monospace; margin: .8rem 0; }
+        .route-group { margin: .8rem 0; }
+        .group-title { cursor: pointer; color: #c4b5fd; font: 700 .9rem ui-monospace, monospace; padding: .5rem 0; }
+        .group-title:hover { color: #ddd6fe; }
         .route { padding: 1rem; margin: .65rem 0; border: 1px solid #374151; border-radius: .7rem; background: #1f2937; }
         .route a { color: #60a5fa; font: 600 1rem ui-monospace, monospace; text-decoration: none; overflow-wrap: anywhere; }
         .route a:hover { color: #93c5fd; text-decoration: underline; }
@@ -110,30 +112,52 @@
         }
 
         function buildTree(items) {
-            const root = { children: new Map(), route: null, path: '' };
+            const root = { children: new Map(), routes: [], path: '' };
             items.forEach(route => {
                 let node = root;
-                route.rule.split('/').filter(Boolean).forEach(segment => {
+                const fixedSegments = route.rule.split('/').filter(segment => segment && !segment.startsWith('<'));
+                fixedSegments.forEach(segment => {
                     if (!node.children.has(segment)) {
-                        node.children.set(segment, { children: new Map(), route: null, path: `${node.path}/${segment}` });
+                        node.children.set(segment, { children: new Map(), routes: [], path: `${node.path}/${segment}` });
                     }
                     node = node.children.get(segment);
                 });
-                node.route = route;
+                node.routes.push(route);
             });
             return root;
         }
 
-        function treeMarkup(node, isRoot = false) {
+        function descendantRouteCount(node) {
+            return node.routes.length + [...node.children.values()]
+                .reduce((total, child) => total + descendantRouteCount(child), 0);
+        }
+
+        function nodeContentMarkup(node, depth) {
+            const ownRoutes = node.routes.map(routeMarkup).join('');
+            const children = [...node.children.values()].map(child => nodeMarkup(child, depth + 1)).join('');
+            return `${ownRoutes}${children ? `<ul>${children}</ul>` : ''}`;
+        }
+
+        function nodeMarkup(node, depth) {
+            const hasExactRoute = node.routes.some(route => route.rule === node.path);
+            const hasSeveralFixedSubroutes = node.children.size > 1 && descendantRouteCount(node) > 1;
+            const shouldShowHeading = depth >= 2 && !hasExactRoute && hasSeveralFixedSubroutes;
+            if (depth === 1 && !hasExactRoute && node.routes.length === 0) {
+                return [...node.children.values()].map(child => nodeMarkup(child, depth + 1)).join('');
+            }
+            const content = nodeContentMarkup(node, depth);
+            if (shouldShowHeading) {
+                return `<li><details class="route-group" open>
+                    <summary class="group-title">${escapeHtml(node.path)} Routes</summary>
+                    ${content}
+                </details></li>`;
+            }
+            return `<li>${content}</li>`;
+        }
+
+        function treeMarkup(node) {
             const children = [...node.children.values()];
-            const content = children.map(child => {
-                const route = child.route ? routeMarkup(child.route) : '';
-                const group = child.children.size
-                    ? `<div class="group-title">${escapeHtml(child.path)} Routes</div>${treeMarkup(child)}`
-                    : '';
-                return `<li>${route}${group}</li>`;
-            }).join('');
-            return `<ul class="${isRoot ? 'tree' : ''}">${content}</ul>`;
+            return `<ul class="tree">${children.map(child => nodeMarkup(child, 1)).join('')}</ul>`;
         }
 
         function renderRoutes() {
@@ -142,7 +166,7 @@
             const matches = routes.filter(route => routeMatches(route, term, selectedFilter));
             const unfiltered = !term && selectedFilter === 'all';
             list.innerHTML = unfiltered
-                ? treeMarkup(buildTree(matches), true)
+                ? treeMarkup(buildTree(matches))
                 : matches.map(routeMarkup).join('');
             summary.textContent = `${matches.length} von ${routes.length} Routen angezeigt`;
             emptyState.hidden = matches.length !== 0;
