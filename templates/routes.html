@@ -33,6 +33,7 @@
         .parameter-name { color: #f9a8d4; font-family: ui-monospace, monospace; }
         .required { color: #fca5a5; }
         .optional { color: #86efac; }
+        .query-example { margin-top: .8rem; padding: .65rem; background: #111827; border-radius: .4rem; color: #93c5fd; overflow-wrap: anywhere; }
         .text-link { color: #9ca3af; }
         [hidden] { display: none !important; }
         @media (max-width: 700px) { .toolbar, .parameter { grid-template-columns: 1fr; } }
@@ -89,13 +90,17 @@
         }
 
         function routeMarkup(route) {
+            const querySection = route.query_parameters.length
+                ? `<div class="query-example"><strong>Parameter nach ?:</strong><br><code>?${escapeHtml(route.query_example)}</code></div>`
+                : '<div class="query-example optional">Keine Parameter nach <code>?</code> verfügbar.</div>';
             const parameterSection = route.parameters.length
                 ? `<details class="parameters"><summary>Parameter (${route.parameters.length})</summary>${route.parameters.map(parameterMarkup).join('')}</details>`
                 : '<div class="parameters optional">Keine Parameter erforderlich.</div>';
             return `<article class="route">
                 <a href="${escapeHtml(route.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(route.rule)}</a>
                 <div class="details"><span class="methods">${route.methods.join(', ')}</span><span>${escapeHtml(route.description)}</span></div>
-                <div class="badges">${route.browser_compatible ? '<span class="badge">Browser kompatibel</span>' : ''}${route.authentication ? '<span class="badge auth">Authentification</span>' : ''}</div>
+                <div class="badges">${route.browser_compatible ? '<span class="badge">Browser kompatibel</span>' : ''}${route.authentication ? '<span class="badge auth">Authentification</span>' : ''}${route.query_parameters.length ? `<span class="badge">? ${route.query_parameters.length} Query-Parameter</span>` : ''}</div>
+                ${querySection}
                 ${parameterSection}
             </article>`;
         }

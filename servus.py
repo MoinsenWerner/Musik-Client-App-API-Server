@@ -1863,19 +1863,28 @@ PARAMETER_DETAILS = {
     'format': ('Erzwingt das Ausgabeformat der Routenliste.', 'html oder text'),
     'token_lifetime_minutes': ('Gültigkeitsdauer eines Access-Tokens.', 'Ganzzahl zwischen 1 und 525600'),
     'apk_file': ('APK-Datei, die hochgeladen wird.', 'Multipart-Datei mit Endung .apk'),
+    'lat': ('Geographischer Breitengrad der Position.', 'Dezimalgrad, zum Beispiel 52.520008'),
+    'lon': ('Geographischer Längengrad der Position.', 'Dezimalgrad, zum Beispiel 13.404954'),
+    'maps_url': ('Link zur Position in einem Kartendienst.', 'Vollständige URL, URL-kodiert'),
+    'admin': ('Name des Administrators.', 'In ADMIN_USERS eingetragener Benutzername'),
+    'passwd': ('Passwort für den administrativen Request.', 'Textwert des konfigurierten Admin-Passworts'),
 }
 
 ROUTE_PARAMETER_OVERRIDES = {
-    'report_soft_error': [('query', name, True) for name in ('app-version', 'error_task', 'error', 'date', 'time', 'last-action')],
-    'report_hard_error': [('query', name, True) for name in ('app-version', 'error_task', 'error', 'date', 'time', 'last-action')],
     'upload_apk_online': [('form', 'version', True), ('file', 'apk_file', True)],
     'list_routes': [('query', 'format', False)],
+    'authorize': [('query', 'scope', False), ('query', 'state', False)],
+    'spotify_callback': [('query', 'error', False)],
 }
 
 
-def extract_request_parameters(view_function):
-    """Liest Query-, Formular- und Datei-Parameter direkt aus einer View-Funktion."""
+def extract_request_parameters(view_function, visited=None):
+    """Liest Request-Parameter auch aus aufgerufenen lokalen Hilfsfunktionen."""
     parameters = []
+    visited = visited or set()
+    if view_function in visited:
+        return parameters
+    visited.add(view_function)
     try:
         tree = ast.parse(inspect.getsource(view_function))
     except (OSError, TypeError, IndentationError, SyntaxError):
@@ -1891,7 +1900,14 @@ def extract_request_parameters(view_function):
             continue
         if owner.attr not in {'args', 'form', 'files'}:
             continue
-        if not isinstance(node.args[0], ast.Constant) or not isinstance(node.args[0].value, str):
+        parameter_name = None
+        if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+            parameter_name = node.args[0].value
+        elif isinstance(node.args[0], ast.Name):
+            configured_name = view_function.__globals__.get(node.args[0].id)
+            if isinstance(configured_name, str):
+                parameter_name = configured_name
+        if parameter_name is None:
             continue
         parameter_type = {'args': 'query', 'form': 'form', 'files': 'file'}[owner.attr]
         required = len(node.args) == 1 or (
@@ -1899,7 +1915,18 @@ def extract_request_parameters(view_function):
             and isinstance(node.args[1], ast.Constant)
             and node.args[1].value is None
         )
-        parameters.append((parameter_type, node.args[0].value, required))
+        parameters.append((parameter_type, parameter_name, required))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        helper = view_function.__globals__.get(node.func.id)
+        if (
+            inspect.isfunction(helper)
+            and getattr(helper, '__module__', None) == __name__
+            and helper not in visited
+        ):
+            parameters.extend(extract_request_parameters(helper, visited))
     return parameters
 
 
@@ -1951,6 +1978,10 @@ def collect_routes():
             if (parameter_type, name) not in known_parameters:
                 parameters.append(describe_parameter(parameter_type, name, required))
                 known_parameters.add((parameter_type, name))
+        query_parameters = [item for item in parameters if item['location'] == 'query']
+        query_example = '&'.join(
+            f"{item['name']}=<{item['format']}>" for item in query_parameters
+        )
         authentication = (
             'execute_proxy_request' in source
             or rule.rule in {'/authorize', '/token'}
@@ -1961,6 +1992,8 @@ def collect_routes():
             'methods': methods,
             'description': description,
             'parameters': parameters,
+            'query_parameters': query_parameters,
+            'query_example': query_example,
             'authentication': authentication,
             'browser_compatible': (
                 'GET' in methods
