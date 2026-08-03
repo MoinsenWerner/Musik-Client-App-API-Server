@@ -2,6 +2,7 @@ import os
 import ast
 import inspect
 import secrets
+import threading
 import time
 import logging
 import re
@@ -26,6 +27,10 @@ BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'apk', 'new-upload')
 LATEST_FOLDER = os.path.join(BASE_DIR, 'apk', 'latest')
 VERSIONS_FOLDER = os.path.join(BASE_DIR, 'apk', 'versions')
+COREDATA_UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+COREDATA_FILENAME = 'core-data-abfragen.txt'
+COREDATA_FILE = os.path.join(COREDATA_UPLOAD_FOLDER, COREDATA_FILENAME)
+COREDATA_WRITE_LOCK = threading.Lock()
 ADMIN_USERS = ["felix", "test", "moin"]
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(BASE_DIR, "oauth2_gateway.db")}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -77,6 +82,7 @@ logging.getLogger('werkzeug').addHandler(file_handler)
 # Verzeichnisse initialisieren
 for folder in [UPLOAD_FOLDER, LATEST_FOLDER, VERSIONS_FOLDER]:
     os.makedirs(folder, exist_ok=True)
+os.makedirs(COREDATA_UPLOAD_FOLDER, exist_ok=True)
 
 # Datenbank-Modell
 class ApkVersion(db.Model):
@@ -353,6 +359,95 @@ def report_mass_error(username):
 
     app.logger.info(f"Mass-Error-Report gespeichert für User: {username}")
     return jsonify({'status': 'ok', 'id': report.id}), 201
+
+
+COREDATA_PATTERN = re.compile(
+    r'^Core-Data-Text:\n'
+    r'Core-Data-Abfrage vom (?P<date>\d{2}\.\d{2}\.(?:\d{2}|\d{4})) '
+    r'um (?P<time>\d{2}\.\d{2}) Uhr:\s*\n+'
+    r'App-Versionsname Tasker: (?P<tasker_version>\d+\.\d+\.\d+)\s*\n'
+    r'-_-_-_-_-_-\s*\n'
+    r'App-Paketname: (?P<package>[a-z]+(?:\.[a-z]+)+)\s*\n'
+    r'-_-_-_-_-_-\s*\n'
+    r'Latest App-Versionsname auf Server: (?P<server_version>\d+\.\d+\.\d+)\s*\n'
+    r'-_-_-_-_-_-\s*\n'
+    r'Latest Updatenotes: (?P<update_notes>[\s\S]+?)\n'
+    r'-_-_-_-_-_-\s*\n'
+    r'API-Base-URL: (?P<api_url>https://\S+)\s*\n'
+    r'-_-_-_-_-_-\s*\n'
+    r'-{67}\s*$',
+)
+
+
+def get_coredata_request_text():
+    """Liest Core-Daten bevorzugt aus dem Body, alternativ aus einem benannten Header."""
+    body_text = request.get_data(as_text=True).strip()
+    if body_text:
+        return body_text, 'body'
+
+    header_text = (
+        request.headers.get('Core-Data-Text')
+        or request.headers.get('X-Core-Data-Text')
+    )
+    if header_text:
+        header_text = header_text.replace('\\n', '\n')
+        if not header_text.startswith('Core-Data-Text:'):
+            header_text = f"Core-Data-Text:\n{header_text}"
+        return header_text.strip(), 'header'
+    return None, None
+
+
+@app.route('/coredatas/download', methods=['GET'])
+def download_coredata():
+    """Lädt die bisher gesammelten Core-Data-Abfragen als Textdatei herunter."""
+    if not os.path.isfile(COREDATA_FILE):
+        return jsonify({
+            'status': 'error',
+            'error': 'coredata_file_not_found',
+            'message': 'Es wurden noch keine Core-Daten hochgeladen.',
+        }), 404
+    return send_from_directory(
+        COREDATA_UPLOAD_FOLDER,
+        COREDATA_FILENAME,
+        as_attachment=True,
+        download_name=COREDATA_FILENAME,
+        mimetype='text/plain',
+    )
+
+
+@app.route('/coredatas/upload', methods=['POST'])
+def upload_coredata():
+    """Validiert eine Core-Data-Abfrage und hängt sie an die bestehende Datei an."""
+    coredata_text, source = get_coredata_request_text()
+    if not coredata_text:
+        return jsonify({
+            'status': 'error',
+            'error': 'missing_coredata',
+            'message': 'Core-Daten müssen im Textkörper oder Core-Data-Text-Header stehen.',
+        }), 400
+
+    normalized_text = coredata_text.replace('\r\n', '\n').replace('\r', '\n')
+    if not COREDATA_PATTERN.fullmatch(normalized_text):
+        return jsonify({
+            'status': 'error',
+            'error': 'invalid_coredata_format',
+            'message': 'Die Core-Daten entsprechen nicht dem erwarteten Format.',
+        }), 400
+
+    os.makedirs(COREDATA_UPLOAD_FOLDER, exist_ok=True)
+    with COREDATA_WRITE_LOCK:
+        has_content = os.path.isfile(COREDATA_FILE) and os.path.getsize(COREDATA_FILE) > 0
+        with open(COREDATA_FILE, 'a', encoding='utf-8', newline='\n') as coredata_file:
+            if has_content:
+                coredata_file.write('\n\n')
+            coredata_file.write(normalized_text.rstrip() + '\n')
+
+    app.logger.info(f"Core-Data-Abfrage aus dem {source} an {COREDATA_FILE} angehängt.")
+    return jsonify({
+        'status': 'ok',
+        'source': source,
+        'message': 'Core-Daten wurden an die bestehende Datei angehängt.',
+    }), 201
 
 
 @app.route('/ressources/<path:resource_name>', methods=['GET'])
@@ -1868,6 +1963,7 @@ PARAMETER_DETAILS = {
     'maps_url': ('Link zur Position in einem Kartendienst.', 'Vollständige URL, URL-kodiert'),
     'admin': ('Name des Administrators.', 'In ADMIN_USERS eingetragener Benutzername'),
     'passwd': ('Passwort für den administrativen Request.', 'Textwert des konfigurierten Admin-Passworts'),
+    'core_data': ('Vollständiger Core-Data-Textblock.', 'Mehrzeiliger UTF-8-Text im dokumentierten Core-Data-Format'),
 }
 
 ROUTE_PARAMETER_OVERRIDES = {
@@ -1875,6 +1971,7 @@ ROUTE_PARAMETER_OVERRIDES = {
     'list_routes': [('query', 'format', False)],
     'authorize': [('query', 'scope', False), ('query', 'state', False)],
     'spotify_callback': [('query', 'error', False)],
+    'upload_coredata': [('body', 'core_data', True)],
 }
 
 
