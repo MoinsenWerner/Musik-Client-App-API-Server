@@ -10,7 +10,8 @@
         main { width: min(700px, calc(100% - 2rem)); margin: 3rem auto; }
         form { display: grid; gap: 1rem; padding: 1.5rem; background: #1f2937; border: 1px solid #374151; border-radius: .75rem; }
         label { display: grid; gap: .35rem; font-weight: 600; }
-        input { padding: .75rem; border: 1px solid #4b5563; border-radius: .45rem; background: #111827; color: #f9fafb; }
+        input, textarea { padding: .75rem; border: 1px solid #4b5563; border-radius: .45rem; background: #111827; color: #f9fafb; font: inherit; }
+        textarea { min-height: 8rem; resize: vertical; }
         button { padding: .8rem; border: 0; border-radius: .45rem; background: #2563eb; color: white; font-weight: 700; cursor: pointer; }
         .error { padding: .8rem; border-radius: .45rem; background: #7f1d1d; }
         nav { display: flex; gap: 1rem; margin-bottom: 1rem; }
@@ -24,7 +25,7 @@
         {% if error %}<p class="error">{{ error }}</p>{% endif %}
         <form method="post">
             <label>Titel *<input name="title" required value="{{ values.get('title', '') if values else '' }}"></label>
-            <label>Text *<input name="text" required value="{{ values.get('text', '') if values else '' }}"></label>
+            <label>Text *<textarea name="text" rows="6" required>{{ values.get('text', '') if values else '' }}</textarea></label>
             <label>Categorie *<input name="category" required value="{{ values.get('category', '') if values else '' }}"></label>
             <label>Gruppe *<input name="notification_group" required value="{{ values.get('notification_group', '') if values else '' }}"></label>
             <label>Png-Pfad<input name="png_path" value="{{ values.get('png_path', '') if values else '' }}"></label>

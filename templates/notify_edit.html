@@ -11,7 +11,8 @@
         .notification { display: grid; gap: .8rem; margin: 1rem 0; padding: 1.2rem; background: #1f2937; border: 1px solid #374151; border-radius: .75rem; }
         .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
         label { display: grid; gap: .3rem; font-size: .9rem; }
-        input { padding: .65rem; border: 1px solid #4b5563; border-radius: .4rem; background: #111827; color: #f9fafb; }
+        input, textarea { padding: .65rem; border: 1px solid #4b5563; border-radius: .4rem; background: #111827; color: #f9fafb; font: inherit; }
+        textarea { min-height: 7rem; resize: vertical; }
         .actions { display: flex; gap: .7rem; }
         button, .add { padding: .65rem 1rem; border: 0; border-radius: .4rem; color: white; font-weight: 700; cursor: pointer; text-decoration: none; }
         button { background: #2563eb; }
@@ -34,7 +35,7 @@
                 <input type="hidden" name="notification_id" value="{{ notification.id }}">
                 <div class="fields">
                     <label>Titel *<input name="title" required value="{{ notification.title }}"></label>
-                    <label>Text *<input name="text" required value="{{ notification.text }}"></label>
+                    <label>Text *<textarea name="text" rows="5" required>{{ notification.text }}</textarea></label>
                     <label>Categorie *<input name="category" required value="{{ notification.category }}"></label>
                     <label>Gruppe *<input name="notification_group" required value="{{ notification.notification_group }}"></label>
                     <label>Png-Pfad<input name="png_path" value="{{ notification.png_path or '' }}"></label>
