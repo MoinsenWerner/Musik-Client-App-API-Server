@@ -31,6 +31,7 @@ COREDATA_UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
 COREDATA_FILENAME = 'core-data-abfragen.txt'
 COREDATA_FILE = os.path.join(COREDATA_UPLOAD_FOLDER, COREDATA_FILENAME)
 COREDATA_WRITE_LOCK = threading.Lock()
+NOTIFICATION_DELIVERY_LOCK = threading.Lock()
 ADMIN_USERS = ["felix", "test", "moin"]
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(BASE_DIR, "oauth2_gateway.db")}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -258,6 +259,29 @@ class MassErrorReport(db.Model):
     user = db.Column(db.String(100), nullable=False)
     app_version = db.Column(db.String(50), nullable=False)
     mass_errors = db.Column(db.Text, nullable=False)
+
+
+class Notification(db.Model):
+    __tablename__ = 'notifications'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    title = db.Column(db.String(200), nullable=False)
+    text = db.Column(db.Text, nullable=False)
+    category = db.Column(db.String(100), nullable=False)
+    notification_group = db.Column(db.String(100), nullable=False)
+    png_path = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
+
+
+class NotificationDelivery(db.Model):
+    __tablename__ = 'notification_deliveries'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    notification_id = db.Column(db.Integer, nullable=False, index=True)
+    client_id = db.Column(db.String(80), nullable=False, index=True)
+    delivered_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
+    __table_args__ = (
+        db.UniqueConstraint('notification_id', 'client_id', name='uq_notification_client'),
+    )
+
 
 with app.app_context():
     db.create_all()
@@ -1062,6 +1086,107 @@ def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None
     excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'access-control-allow-origin']
     response_headers = [(k, v) for k, v in proxy_response_headers.items() if k.lower() not in excluded_headers]
     return last_response_data, last_status_code, response_headers
+
+
+def validate_notification_form():
+    """Validiert und bereinigt die Eingabefelder einer Benachrichtigung."""
+    values = {
+        'title': request.form.get('title', '').strip(),
+        'text': request.form.get('text', '').strip(),
+        'category': request.form.get('category', '').strip(),
+        'notification_group': request.form.get('notification_group', '').strip(),
+        'png_path': request.form.get('png_path', '').strip() or None,
+    }
+    missing = [
+        field for field in ('title', 'text', 'category', 'notification_group')
+        if not values[field]
+    ]
+    if missing:
+        return None, 'Titel, Text, Categorie und Gruppe sind Pflichtfelder.'
+    if any('|' in value for value in values.values() if value):
+        return None, 'Das Zeichen | ist in Benachrichtigungsfeldern nicht erlaubt.'
+    return values, None
+
+
+@app.route('/notify/new', methods=['GET'])
+def get_new_notification():
+    """Gibt die älteste, vom authentifizierten Client noch nicht empfangene Nachricht zurück."""
+    is_valid, token_or_error = verify_gateway_token(request.headers)
+    if not is_valid:
+        return jsonify(token_or_error), 401
+
+    with NOTIFICATION_DELIVERY_LOCK:
+        delivered_ids = db.select(NotificationDelivery.notification_id).where(
+            NotificationDelivery.client_id == token_or_error.client_id
+        )
+        notification = Notification.query.filter(
+            ~Notification.id.in_(delivered_ids)
+        ).order_by(Notification.created_at.asc(), Notification.id.asc()).first()
+        if notification is None:
+            return Response(status=204)
+
+        db.session.add(NotificationDelivery(
+            notification_id=notification.id,
+            client_id=token_or_error.client_id,
+        ))
+        db.session.commit()
+
+    fields = [
+        notification.title,
+        notification.text,
+        notification.category,
+        notification.notification_group,
+    ]
+    if notification.png_path:
+        fields.append(notification.png_path)
+    return Response('|'.join(fields), content_type='text/plain; charset=utf-8')
+
+
+@app.route('/notify/add', methods=['GET', 'POST'])
+def add_notification():
+    """Zeigt das Formular zum Erstellen einer Benachrichtigung und speichert dessen Inhalt."""
+    if request.method == 'GET':
+        return render_template('notify_add.html')
+
+    values, error = validate_notification_form()
+    if error:
+        return render_template('notify_add.html', error=error, values=request.form), 400
+
+    notification = Notification(**values)
+    db.session.add(notification)
+    db.session.commit()
+    flash('Benachrichtigung wurde gespeichert.', 'success')
+    return redirect('/notify/edit')
+
+
+@app.route('/notify/edit', methods=['GET', 'POST'])
+def edit_notifications():
+    """Zeigt vorhandene Benachrichtigungen und verarbeitet Änderungen oder Löschungen."""
+    error = None
+    if request.method == 'POST':
+        notification_id = request.form.get('notification_id', type=int)
+        notification = db.session.get(Notification, notification_id) if notification_id else None
+        if notification is None:
+            error = 'Die ausgewählte Benachrichtigung wurde nicht gefunden.'
+        elif request.form.get('action') == 'delete':
+            NotificationDelivery.query.filter_by(notification_id=notification.id).delete()
+            db.session.delete(notification)
+            db.session.commit()
+            flash('Benachrichtigung wurde gelöscht.', 'success')
+            return redirect('/notify/edit')
+        else:
+            values, error = validate_notification_form()
+            if not error:
+                for field, value in values.items():
+                    setattr(notification, field, value)
+                db.session.commit()
+                flash('Benachrichtigung wurde aktualisiert.', 'success')
+                return redirect('/notify/edit')
+
+    notifications = Notification.query.order_by(
+        Notification.created_at.desc(), Notification.id.desc()
+    ).all()
+    return render_template('notify_edit.html', notifications=notifications, error=error), 400 if error else 200
 
 # ==========================================
 # DASHBOARD TEMPLATE
@@ -2081,6 +2206,7 @@ def collect_routes():
         )
         authentication = (
             'execute_proxy_request' in source
+            or 'verify_gateway_token' in source
             or rule.rule in {'/authorize', '/token'}
         )
         routes.append({
@@ -2095,7 +2221,10 @@ def collect_routes():
             'browser_compatible': (
                 'GET' in methods
                 and not authentication
-                and not any(item['required'] for item in parameters)
+                and not any(
+                    item['required'] and item['location'] in {'path', 'query'}
+                    for item in parameters
+                )
             ),
         })
     return routes
