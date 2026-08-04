@@ -2,17 +2,21 @@ import os
 import ast
 import inspect
 import secrets
+import sqlite3
+import subprocess
 import threading
 import time
 import logging
 import re
 import math
 from datetime import datetime
-from shutil import move
+from shutil import copy2, move, rmtree
 from logging.handlers import RotatingFileHandler
 import requests
 from flask import Flask, request, jsonify, render_template_string, render_template, redirect, flash, make_response, abort, Response, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import event
+from sqlalchemy.orm import Session
 from werkzeug.security import generate_password_hash, check_password_hash
 import glob
 from packaging.version import parse as parse_version
@@ -24,6 +28,11 @@ os.makedirs(UPDATES_DIR, exist_ok=True)
 
 app = Flask(__name__)
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DATABASE_FILE = os.path.join(BASE_DIR, 'oauth2_gateway.db')
+DB_BACKUP_FOLDER = os.path.join(BASE_DIR, 'db_bak')
+DB_BACKUP_GIT_FOLDER = os.path.join(DB_BACKUP_FOLDER, 'git-repository')
+DB_BACKUP_GIT_URL = 'https://github.com/MoinsenWerner/Musik-Client-API-Server-DB-Backups.git'
+DATABASE_BACKUP_LOCK = threading.Lock()
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'apk', 'new-upload')
 LATEST_FOLDER = os.path.join(BASE_DIR, 'apk', 'latest')
 VERSIONS_FOLDER = os.path.join(BASE_DIR, 'apk', 'versions')
@@ -33,7 +42,7 @@ COREDATA_FILE = os.path.join(COREDATA_UPLOAD_FOLDER, COREDATA_FILENAME)
 COREDATA_WRITE_LOCK = threading.Lock()
 NOTIFICATION_DELIVERY_LOCK = threading.Lock()
 ADMIN_USERS = ["felix", "test", "moin"]
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(BASE_DIR, "oauth2_gateway.db")}'
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DATABASE_FILE}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = secrets.token_hex(32)
 
@@ -57,6 +66,89 @@ VAR_NAME_4 = "date"     # <varname4>
 VAR_NAME_5 = "maps_url"     # <varname5>
 
 db = SQLAlchemy(app)
+
+
+def run_backup_git_command(arguments, cwd=None, timeout=20):
+    """Führt einen Git-Befehl für das Backup-Repository ohne interaktive Eingaben aus."""
+    return subprocess.run(
+        ['git', *arguments],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env={**os.environ, 'GIT_TERMINAL_PROMPT': '0'},
+    )
+
+
+def upload_database_backup_to_git(backup_path):
+    """Versucht, ein Datenbank-Backup in das konfigurierte GitHub-Repository zu pushen."""
+    if os.environ.get('DB_BACKUP_GIT_ENABLED', '1') != '1':
+        return False
+
+    try:
+        if not os.path.isdir(os.path.join(DB_BACKUP_GIT_FOLDER, '.git')):
+            if os.path.exists(DB_BACKUP_GIT_FOLDER):
+                rmtree(DB_BACKUP_GIT_FOLDER)
+            clone_result = run_backup_git_command([
+                'clone', DB_BACKUP_GIT_URL, DB_BACKUP_GIT_FOLDER,
+            ], cwd=DB_BACKUP_FOLDER, timeout=30)
+            if clone_result.returncode != 0:
+                app.logger.warning(f"Git-Clone für DB-Backup fehlgeschlagen: {clone_result.stderr.strip()}")
+                return False
+
+        copy2(backup_path, os.path.join(DB_BACKUP_GIT_FOLDER, os.path.basename(backup_path)))
+        run_backup_git_command(['config', 'user.name', 'Musik Client API Backup'], cwd=DB_BACKUP_GIT_FOLDER)
+        run_backup_git_command(['config', 'user.email', 'backup@musik-client-api.local'], cwd=DB_BACKUP_GIT_FOLDER)
+        run_backup_git_command(['pull', '--rebase'], cwd=DB_BACKUP_GIT_FOLDER, timeout=30)
+        add_result = run_backup_git_command(['add', os.path.basename(backup_path)], cwd=DB_BACKUP_GIT_FOLDER)
+        if add_result.returncode != 0:
+            app.logger.warning(f"Git-Add für DB-Backup fehlgeschlagen: {add_result.stderr.strip()}")
+            return False
+        commit_result = run_backup_git_command([
+            'commit', '-m', f"Database backup {os.path.basename(backup_path)}",
+        ], cwd=DB_BACKUP_GIT_FOLDER)
+        if commit_result.returncode != 0:
+            app.logger.warning(f"Git-Commit für DB-Backup fehlgeschlagen: {commit_result.stderr.strip()}")
+            return False
+        push_result = run_backup_git_command(['push', 'origin', 'HEAD'], cwd=DB_BACKUP_GIT_FOLDER, timeout=30)
+        if push_result.returncode != 0:
+            app.logger.warning(f"Git-Push für DB-Backup fehlgeschlagen: {push_result.stderr.strip()}")
+            return False
+        app.logger.info(f"Datenbank-Backup zu GitHub hochgeladen: {os.path.basename(backup_path)}")
+        return True
+    except (OSError, subprocess.SubprocessError) as error:
+        app.logger.warning(f"Git-Upload für DB-Backup fehlgeschlagen: {error}")
+        return False
+
+
+def create_database_backup():
+    """Erstellt mit der SQLite-Backup-API eine konsistente Kopie der aktuellen Datenbank."""
+    if not os.path.isfile(DATABASE_FILE):
+        app.logger.warning(f"DB-Backup übersprungen, Datenbankdatei fehlt: {DATABASE_FILE}")
+        return None
+
+    with DATABASE_BACKUP_LOCK:
+        os.makedirs(DB_BACKUP_FOLDER, exist_ok=True)
+        timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S-%f')
+        backup_path = os.path.join(DB_BACKUP_FOLDER, f'oauth2_gateway-{timestamp}.db')
+        with sqlite3.connect(DATABASE_FILE) as source_database:
+            with sqlite3.connect(backup_path) as backup_database:
+                source_database.backup(backup_database)
+    app.logger.info(f"Datenbank-Backup erstellt: {backup_path}")
+    upload_database_backup_to_git(backup_path)
+    return backup_path
+
+
+@event.listens_for(Session, 'after_commit')
+def backup_database_after_commit(session):
+    """Sichert die Datenbank nach jedem erfolgreichen SQLAlchemy-Commit dieser Anwendung."""
+    bind = session.get_bind()
+    if bind.url.database and os.path.abspath(bind.url.database) == DATABASE_FILE:
+        try:
+            create_database_backup()
+        except (OSError, sqlite3.Error) as error:
+            app.logger.error(f"Datenbank-Backup nach Commit fehlgeschlagen: {error}")
 
 # ==========================================
 # ADVANCED LOGGING KONFIGURATION
