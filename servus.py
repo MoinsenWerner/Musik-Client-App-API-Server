@@ -1,5 +1,6 @@
 import os
 import ast
+import json
 import inspect
 import secrets
 import sqlite3
@@ -373,6 +374,25 @@ class NotificationDelivery(db.Model):
     __table_args__ = (
         db.UniqueConstraint('notification_id', 'client_id', name='uq_notification_client'),
     )
+
+
+class PlaylistContent(db.Model):
+    __tablename__ = 'playlist_contents'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(200), nullable=False, index=True)
+    playlist_id = db.Column(db.String(100), nullable=True, index=True)
+    song_names = db.Column(db.Text, nullable=False)
+    song_ids = db.Column(db.Text, nullable=False)
+    image_links = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
+    updated_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
+
+
+class PlayingPlaylist(db.Model):
+    __tablename__ = 'playing_playlist'
+    id = db.Column(db.Integer, primary_key=True, default=1)
+    playlist_content_id = db.Column(db.Integer, nullable=False)
+    updated_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
 
 
 with app.app_context():
@@ -1091,7 +1111,7 @@ def verify_gateway_token(headers):
     app.logger.debug(f"Gateway-Token verifiziert für Client-ID: {token_entry.client_id}")
     return True, token_entry
 
-def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None):
+def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None, request_body=None):
     """Zentraler Proxy-Abforderer für die dedizierten Routen"""
     app.logger.debug(f"Verarbeite Proxy-Request für Pfad: {target_path} [{method}]")
     is_valid, token_or_err = verify_gateway_token(request.headers)
@@ -1113,6 +1133,8 @@ def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None
 
         proxy_headers = {k: v for k, v in request.headers.items() if k.lower() != 'host'}
         proxy_headers['Authorization'] = f"Bearer {spotify_token}"
+        if request_body is not None:
+            proxy_headers['Content-Type'] = 'application/json'
         
         # Bereinige v1-Dopplung und Slashes, da target_path bereits '/v1/...' enthält oder enthalten soll
         clean_path = target_path.lstrip('/')
@@ -1127,7 +1149,7 @@ def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None
                 method=method,
                 url=target_url,
                 headers=proxy_headers,
-                data=request.get_data(),
+                data=request.get_data() if request_body is None else request_body,
                 cookies=request.cookies,
                 allow_redirects=False,
                 timeout=10
@@ -1143,6 +1165,8 @@ def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None
     # Server-Modus (Lokale Backends durchlaufen)
     app.logger.debug("Server-Modus aktiv. Leite Anfrage an lokale Backends weiter...")
     proxy_headers = {k: v for k, v in request.headers.items() if k.lower() != 'host'}
+    if request_body is not None:
+        proxy_headers['Content-Type'] = 'application/json'
     last_response_data = None
     last_status_code = 502
     proxy_response_headers = {}
@@ -1156,7 +1180,7 @@ def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None
                 method=method,
                 url=target_url,
                 headers=proxy_headers,
-                data=request.get_data(),
+                data=request.get_data() if request_body is None else request_body,
                 cookies=request.cookies,
                 allow_redirects=False,
                 timeout=10
@@ -1649,6 +1673,123 @@ def download_specific_version(version):
 # ==========================================
 # DEFINIERTE PLAYER ENDPUNKTE
 # ==========================================
+
+
+def parse_playlist_values(value):
+    """Teilt eine kommaseparierte Query-Angabe und erhält bewusst leere Bildeinträge."""
+    if value is None:
+        return None
+    return [item.strip() for item in value.split(',')]
+
+
+def find_playlist_content(name, playlist_id=None):
+    """Sucht eine gespeicherte Playlist bevorzugt anhand ihrer Spotify-ID."""
+    query = PlaylistContent.query
+    if playlist_id:
+        return query.filter_by(playlist_id=playlist_id).order_by(PlaylistContent.updated_at.desc()).first()
+    return query.filter_by(name=name).order_by(PlaylistContent.updated_at.desc()).first()
+
+
+def serialize_playlist_content(playlist):
+    """Gibt gespeicherten Playlistinhalt als strukturiertes JSON-kompatibles Objekt zurück."""
+    names = json.loads(playlist.song_names)
+    song_ids = json.loads(playlist.song_ids)
+    images = json.loads(playlist.image_links)
+    return {
+        'name': playlist.name,
+        'playlist_id': playlist.playlist_id,
+        'content': names,
+        'ids': song_ids,
+        'bilder': images,
+        'songs': [
+            {'name': name, 'id': song_id, 'bild': images[index] or None}
+            for index, (name, song_id) in enumerate(zip(names, song_ids))
+        ],
+    }
+
+
+@app.route('/playlistcontent/list', methods=['POST'])
+def save_playlist_content():
+    """Speichert oder aktualisiert den per Query-Parametern übertragenen Playlistinhalt."""
+    name = request.args.get('name', '').strip()
+    names = parse_playlist_values(request.args.get('content'))
+    song_ids = parse_playlist_values(request.args.get('ids'))
+    images = parse_playlist_values(request.args.get('bilder'))
+    playlist_id = request.args.get('pl-id', '').strip() or None
+
+    if not name or names is None or song_ids is None:
+        return jsonify({
+            'status': 'error',
+            'message': 'name, content und ids sind Pflichtangaben.',
+        }), 400
+    if not names or any(not item for item in names) or any(not item for item in song_ids):
+        return jsonify({'status': 'error', 'message': 'Songnamen und Song-IDs dürfen nicht leer sein.'}), 400
+    if len(names) != len(song_ids):
+        return jsonify({'status': 'error', 'message': 'content und ids müssen gleich viele Einträge enthalten.'}), 400
+    if images is None or images == ['']:
+        images = [''] * len(names)
+    if len(images) != len(names):
+        return jsonify({'status': 'error', 'message': 'bilder muss gleich viele Einträge wie content enthalten.'}), 400
+
+    playlist = find_playlist_content(name, playlist_id)
+    if playlist is None:
+        playlist = PlaylistContent(name=name, playlist_id=playlist_id)
+        db.session.add(playlist)
+    playlist.name = name
+    if playlist_id is not None:
+        playlist.playlist_id = playlist_id
+    playlist.song_names = json.dumps(names, ensure_ascii=False)
+    playlist.song_ids = json.dumps(song_ids, ensure_ascii=False)
+    playlist.image_links = json.dumps(images, ensure_ascii=False)
+    playlist.updated_at = int(time.time())
+    db.session.commit()
+    return jsonify({'status': 'ok', 'playlist': serialize_playlist_content(playlist)}), 201
+
+
+@app.route('/playlistcontent/get/<path:playlist_name>', methods=['GET'])
+def get_playlist_content(playlist_name):
+    """Liefert die aktuell spielende oder eine namentlich beziehungsweise per ID gewählte Playlist."""
+    playlist_id = request.args.get('id', '').strip() or None
+    if playlist_name.lower() == 'playing':
+        playing = db.session.get(PlayingPlaylist, 1)
+        playlist = db.session.get(PlaylistContent, playing.playlist_content_id) if playing else None
+    else:
+        playlist = find_playlist_content(playlist_name, playlist_id)
+    if playlist is None:
+        return jsonify({'status': 'error', 'message': 'Playlist wurde nicht gefunden.'}), 404
+    return jsonify(serialize_playlist_content(playlist))
+
+
+@app.route('/playlist/play/<path:playlist_name>', methods=['POST'])
+def play_playlist(playlist_name):
+    """Startet die angegebene gespeicherte Playlist über die Spotify-Playback-API."""
+    playlist_id = request.args.get('id', '').strip() or None
+    playlist = find_playlist_content(playlist_name, playlist_id)
+    if playlist is None:
+        return jsonify({'status': 'error', 'message': 'Playlist wurde nicht gefunden.'}), 404
+    if not playlist.playlist_id:
+        return jsonify({
+            'status': 'error',
+            'message': 'Zum Abspielen ist eine Spotify Playlist-ID erforderlich.',
+        }), 400
+
+    spotify_body = json.dumps({'context_uri': f'spotify:playlist:{playlist.playlist_id}'})
+    response = execute_proxy_request(
+        '/v1/me/player/play',
+        method='PUT',
+        request_body=spotify_body,
+    )
+    status_code = response[1] if isinstance(response, tuple) else response.status_code
+    if 200 <= status_code < 300:
+        playing = db.session.get(PlayingPlaylist, 1)
+        if playing is None:
+            playing = PlayingPlaylist(id=1, playlist_content_id=playlist.id)
+            db.session.add(playing)
+        playing.playlist_content_id = playlist.id
+        playing.updated_at = int(time.time())
+        db.session.commit()
+    return response
+
 
 @app.route('/player', methods=['GET'])
 def get_player_status():
@@ -2181,6 +2322,11 @@ PARAMETER_DETAILS = {
     'admin': ('Name des Administrators.', 'In ADMIN_USERS eingetragener Benutzername'),
     'passwd': ('Passwort für den administrativen Request.', 'Textwert des konfigurierten Admin-Passworts'),
     'core_data': ('Vollständiger Core-Data-Textblock.', 'Mehrzeiliger UTF-8-Text im dokumentierten Core-Data-Format'),
+    'name': ('Name der zu speichernden Playlist.', 'Freier URL-kodierter Text'),
+    'content': ('Namen der Songs in ihrer Playlist-Reihenfolge.', 'Durch Kommas getrennte Songnamen'),
+    'ids': ('Spotify-IDs der Songs in derselben Reihenfolge.', 'Durch Kommas getrennte Spotify Track-IDs'),
+    'bilder': ('Bildlinks passend zu den Songs.', 'Durch Kommas getrennte HTTPS-Links; einzelne Einträge dürfen leer sein'),
+    'pl-id': ('Spotify-ID der Playlist.', 'Spotify Playlist-ID als Text'),
 }
 
 ROUTE_PARAMETER_OVERRIDES = {
@@ -2189,6 +2335,15 @@ ROUTE_PARAMETER_OVERRIDES = {
     'authorize': [('query', 'scope', False), ('query', 'state', False)],
     'spotify_callback': [('query', 'error', False)],
     'upload_coredata': [('body', 'core_data', True)],
+    'save_playlist_content': [
+        ('query', 'name', True),
+        ('query', 'content', True),
+        ('query', 'ids', True),
+        ('query', 'bilder', False),
+        ('query', 'pl-id', False),
+    ],
+    'get_playlist_content': [('query', 'id', False)],
+    'play_playlist': [('query', 'id', False)],
 }
 
 
@@ -2292,6 +2447,11 @@ def collect_routes():
             if (parameter_type, name) not in known_parameters:
                 parameters.append(describe_parameter(parameter_type, name, required))
                 known_parameters.add((parameter_type, name))
+        if rule.endpoint in {'get_playlist_content', 'play_playlist'}:
+            for parameter in parameters:
+                if parameter['location'] == 'query' and parameter['name'] == 'id':
+                    parameter['purpose'] = 'Optionale Spotify-ID zur eindeutigen Auswahl der Playlist.'
+                    parameter['format'] = 'Spotify Playlist-ID als Text'
         query_parameters = [item for item in parameters if item['location'] == 'query']
         query_example = '&'.join(
             f"{item['name']}=<{item['format']}>" for item in query_parameters
