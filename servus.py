@@ -381,6 +381,7 @@ class PlaylistContent(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.String(200), nullable=False, index=True)
     playlist_id = db.Column(db.String(100), nullable=True, index=True)
+    creator = db.Column(db.String(200), nullable=False, default='Admin')
     song_names = db.Column(db.Text, nullable=False)
     song_ids = db.Column(db.Text, nullable=False)
     image_links = db.Column(db.Text, nullable=False)
@@ -404,6 +405,15 @@ with app.app_context():
         db.session.execute(db.text(
             "ALTER TABLE client_credentials "
             "ADD COLUMN token_lifetime_seconds INTEGER NOT NULL DEFAULT 86400"
+        ))
+        db.session.commit()
+    playlist_columns = {
+        column[1] for column in db.session.execute(db.text("PRAGMA table_info(playlist_contents)"))
+    }
+    if 'creator' not in playlist_columns:
+        db.session.execute(db.text(
+            "ALTER TABLE playlist_contents "
+            "ADD COLUMN creator VARCHAR(200) NOT NULL DEFAULT 'Admin'"
         ))
         db.session.commit()
     
@@ -1698,6 +1708,7 @@ def serialize_playlist_content(playlist):
     return {
         'name': playlist.name,
         'playlist_id': playlist.playlist_id,
+        'ersteller': playlist.creator or 'Admin',
         'content': names,
         'ids': song_ids,
         'bilder': images,
@@ -1730,6 +1741,7 @@ def save_playlist_content():
     song_ids = parse_playlist_values(request.args.get('ids'))
     images = parse_playlist_values(request.args.get('bilder'))
     playlist_id = request.args.get('pl-id', '').strip() or None
+    creator = request.args.get('ersteller', '').strip() or 'Admin'
 
     if not name or names is None or song_ids is None:
         return jsonify({
@@ -1752,12 +1764,64 @@ def save_playlist_content():
     playlist.name = name
     if playlist_id is not None:
         playlist.playlist_id = playlist_id
+    playlist.creator = creator
     playlist.song_names = json.dumps(names, ensure_ascii=False)
     playlist.song_ids = json.dumps(song_ids, ensure_ascii=False)
     playlist.image_links = json.dumps(images, ensure_ascii=False)
     playlist.updated_at = int(time.time())
     db.session.commit()
     return jsonify({'status': 'ok', 'playlist': serialize_playlist_content(playlist)}), 201
+
+
+def format_server_playlist(playlist, number):
+    """Formatiert einen Playlist-Listeneintrag für den Musik-Client."""
+    return '•|•'.join((
+        playlist.name,
+        str(number),
+        playlist.playlist_id or '',
+        playlist.creator or 'Admin',
+    ))
+
+
+@app.route('/serverplaylists/list', methods=['GET'])
+def list_server_playlists():
+    """Liefert alle oder einen vom Client bestimmten Ausschnitt der Server-Playlists."""
+    requested_number = request.args.get('num', '').strip().lower()
+    query = PlaylistContent.query.order_by(
+        PlaylistContent.created_at.asc(),
+        PlaylistContent.id.asc(),
+    )
+
+    if requested_number == 'all':
+        start_number = 1
+        playlists = query.all()
+    else:
+        last_number_raw = request.args.get('last-num')
+        try:
+            amount = int(requested_number)
+            last_number = int(last_number_raw) if last_number_raw is not None else -1
+        except ValueError:
+            amount = 0
+            last_number = -1
+        if amount < 1 or last_number < 0:
+            return jsonify({
+                'status': 'error',
+                'message': 'num muss "all" oder eine positive Ganzzahl sein; last-num muss mindestens 0 sein.',
+            }), 400
+        start_number = last_number + 1
+        playlists = query.offset(last_number).limit(amount).all()
+
+    entries = [
+        format_server_playlist(playlist, start_number + index)
+        for index, playlist in enumerate(playlists)
+    ]
+    return '°|°'.join(entries), 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
+
+@app.route('/serverplaylists/maxnum', methods=['GET'])
+def get_server_playlists_maxnum():
+    """Liefert die Anzahl aller in der Datenbank gespeicherten Playlists."""
+    return str(PlaylistContent.query.count()), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 
 @app.route('/playlistcontent/get/<path:playlist_name>', methods=['GET'])
@@ -2341,6 +2405,9 @@ PARAMETER_DETAILS = {
     'ids': ('Spotify-IDs der Songs in derselben Reihenfolge.', 'Durch Kommas getrennte Spotify Track-IDs'),
     'bilder': ('Bildlinks passend zu den Songs.', 'Durch Kommas getrennte HTTPS-Links; einzelne Einträge dürfen leer sein'),
     'pl-id': ('Spotify-ID der Playlist.', 'Spotify Playlist-ID als Text'),
+    'ersteller': ('Name des Erstellers der Playlist.', 'Freier URL-kodierter Text; Standardwert Admin'),
+    'num': ('Anzahl der auszugebenden Playlists oder Auswahl aller Playlists.', 'all oder positive Ganzzahl'),
+    'last-num': ('Anzahl der bereits vom Client empfangenen Playlists.', 'Ganzzahl ab 0; bei num=all nicht erforderlich'),
 }
 
 ROUTE_PARAMETER_OVERRIDES = {
@@ -2355,9 +2422,11 @@ ROUTE_PARAMETER_OVERRIDES = {
         ('query', 'ids', True),
         ('query', 'bilder', False),
         ('query', 'pl-id', False),
+        ('query', 'ersteller', False),
     ],
     'get_playlist_content': [('query', 'id', False)],
     'play_playlist': [('query', 'id', False)],
+    'list_server_playlists': [('query', 'num', True), ('query', 'last-num', False)],
 }
 
 
