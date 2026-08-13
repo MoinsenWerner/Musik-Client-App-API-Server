@@ -1708,6 +1708,20 @@ def serialize_playlist_content(playlist):
     }
 
 
+def format_playlist_content(playlist):
+    """Formatiert Playlistdaten im vom Musik-Client erwarteten Textformat."""
+    names = json.loads(playlist.song_names)
+    song_ids = json.loads(playlist.song_ids)
+    images = json.loads(playlist.image_links)
+    return "\n___\n".join((
+        ','.join(names),
+        ','.join(song_ids),
+        ','.join(images),
+        playlist.name,
+        playlist.playlist_id or '',
+    ))
+
+
 @app.route('/playlistcontent/list', methods=['POST'])
 def save_playlist_content():
     """Speichert oder aktualisiert den per Query-Parametern übertragenen Playlistinhalt."""
@@ -1757,7 +1771,7 @@ def get_playlist_content(playlist_name):
         playlist = find_playlist_content(playlist_name, playlist_id)
     if playlist is None:
         return jsonify({'status': 'error', 'message': 'Playlist wurde nicht gefunden.'}), 404
-    return jsonify(serialize_playlist_content(playlist))
+    return format_playlist_content(playlist), 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
 
 @app.route('/playlist/play/<path:playlist_name>', methods=['POST'])
