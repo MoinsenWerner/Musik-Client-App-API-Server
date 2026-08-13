@@ -1,17 +1,27 @@
 import os
+import ast
+import json
+import inspect
 import secrets
+import sqlite3
+import subprocess
+import threading
 import time
 import logging
 import re
-from shutil import move
+import math
+from datetime import datetime
+from shutil import copy2, move, rmtree
 from logging.handlers import RotatingFileHandler
 import requests
-from flask import Flask, request, jsonify, render_template_string, redirect, flash, make_response, abort, Response, send_from_directory
+from flask import Flask, request, jsonify, render_template_string, render_template, redirect, flash, make_response, abort, Response, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import event
+from sqlalchemy.orm import Session
 from werkzeug.security import generate_password_hash, check_password_hash
 import glob
 from packaging.version import parse as parse_version
-from werkzeug.utils import safe_join
+from werkzeug.utils import safe_join, secure_filename
 
 UPDATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "updates")
 os.makedirs(UPDATES_DIR, exist_ok=True)
@@ -19,11 +29,21 @@ os.makedirs(UPDATES_DIR, exist_ok=True)
 
 app = Flask(__name__)
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DATABASE_FILE = os.path.join(BASE_DIR, 'oauth2_gateway.db')
+DB_BACKUP_FOLDER = os.path.join(BASE_DIR, 'db_bak')
+DB_BACKUP_GIT_FOLDER = os.path.join(DB_BACKUP_FOLDER, 'git-repository')
+DB_BACKUP_GIT_URL = 'https://github.com/MoinsenWerner/Musik-Client-API-Server-DB-Backups.git'
+DATABASE_BACKUP_LOCK = threading.Lock()
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'apk', 'new-upload')
 LATEST_FOLDER = os.path.join(BASE_DIR, 'apk', 'latest')
 VERSIONS_FOLDER = os.path.join(BASE_DIR, 'apk', 'versions')
+COREDATA_UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+COREDATA_FILENAME = 'core-data-abfragen.txt'
+COREDATA_FILE = os.path.join(COREDATA_UPLOAD_FOLDER, COREDATA_FILENAME)
+COREDATA_WRITE_LOCK = threading.Lock()
+NOTIFICATION_DELIVERY_LOCK = threading.Lock()
 ADMIN_USERS = ["felix", "test", "moin"]
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(BASE_DIR, "oauth2_gateway.db")}'
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DATABASE_FILE}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = secrets.token_hex(32)
 
@@ -48,10 +68,94 @@ VAR_NAME_5 = "maps_url"     # <varname5>
 
 db = SQLAlchemy(app)
 
+
+def run_backup_git_command(arguments, cwd=None, timeout=20):
+    """Führt einen Git-Befehl für das Backup-Repository ohne interaktive Eingaben aus."""
+    return subprocess.run(
+        ['git', *arguments],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env={**os.environ, 'GIT_TERMINAL_PROMPT': '0'},
+    )
+
+
+def upload_database_backup_to_git(backup_path):
+    """Versucht, ein Datenbank-Backup in das konfigurierte GitHub-Repository zu pushen."""
+    if os.environ.get('DB_BACKUP_GIT_ENABLED', '1') != '1':
+        return False
+
+    try:
+        if not os.path.isdir(os.path.join(DB_BACKUP_GIT_FOLDER, '.git')):
+            if os.path.exists(DB_BACKUP_GIT_FOLDER):
+                rmtree(DB_BACKUP_GIT_FOLDER)
+            clone_result = run_backup_git_command([
+                'clone', DB_BACKUP_GIT_URL, DB_BACKUP_GIT_FOLDER,
+            ], cwd=DB_BACKUP_FOLDER, timeout=30)
+            if clone_result.returncode != 0:
+                app.logger.warning(f"Git-Clone für DB-Backup fehlgeschlagen: {clone_result.stderr.strip()}")
+                return False
+
+        copy2(backup_path, os.path.join(DB_BACKUP_GIT_FOLDER, os.path.basename(backup_path)))
+        run_backup_git_command(['config', 'user.name', 'Musik Client API Backup'], cwd=DB_BACKUP_GIT_FOLDER)
+        run_backup_git_command(['config', 'user.email', 'backup@musik-client-api.local'], cwd=DB_BACKUP_GIT_FOLDER)
+        run_backup_git_command(['pull', '--rebase'], cwd=DB_BACKUP_GIT_FOLDER, timeout=30)
+        add_result = run_backup_git_command(['add', os.path.basename(backup_path)], cwd=DB_BACKUP_GIT_FOLDER)
+        if add_result.returncode != 0:
+            app.logger.warning(f"Git-Add für DB-Backup fehlgeschlagen: {add_result.stderr.strip()}")
+            return False
+        commit_result = run_backup_git_command([
+            'commit', '-m', f"Database backup {os.path.basename(backup_path)}",
+        ], cwd=DB_BACKUP_GIT_FOLDER)
+        if commit_result.returncode != 0:
+            app.logger.warning(f"Git-Commit für DB-Backup fehlgeschlagen: {commit_result.stderr.strip()}")
+            return False
+        push_result = run_backup_git_command(['push', 'origin', 'HEAD'], cwd=DB_BACKUP_GIT_FOLDER, timeout=30)
+        if push_result.returncode != 0:
+            app.logger.warning(f"Git-Push für DB-Backup fehlgeschlagen: {push_result.stderr.strip()}")
+            return False
+        app.logger.info(f"Datenbank-Backup zu GitHub hochgeladen: {os.path.basename(backup_path)}")
+        return True
+    except (OSError, subprocess.SubprocessError) as error:
+        app.logger.warning(f"Git-Upload für DB-Backup fehlgeschlagen: {error}")
+        return False
+
+
+def create_database_backup():
+    """Erstellt mit der SQLite-Backup-API eine konsistente Kopie der aktuellen Datenbank."""
+    if not os.path.isfile(DATABASE_FILE):
+        app.logger.warning(f"DB-Backup übersprungen, Datenbankdatei fehlt: {DATABASE_FILE}")
+        return None
+
+    with DATABASE_BACKUP_LOCK:
+        os.makedirs(DB_BACKUP_FOLDER, exist_ok=True)
+        timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S-%f')
+        backup_path = os.path.join(DB_BACKUP_FOLDER, f'oauth2_gateway-{timestamp}.db')
+        with sqlite3.connect(DATABASE_FILE) as source_database:
+            with sqlite3.connect(backup_path) as backup_database:
+                source_database.backup(backup_database)
+    app.logger.info(f"Datenbank-Backup erstellt: {backup_path}")
+    upload_database_backup_to_git(backup_path)
+    return backup_path
+
+
+@event.listens_for(Session, 'after_commit')
+def backup_database_after_commit(session):
+    """Sichert die Datenbank nach jedem erfolgreichen SQLAlchemy-Commit dieser Anwendung."""
+    bind = session.get_bind()
+    if bind.url.database and os.path.abspath(bind.url.database) == DATABASE_FILE:
+        try:
+            create_database_backup()
+        except (OSError, sqlite3.Error) as error:
+            app.logger.error(f"Datenbank-Backup nach Commit fehlgeschlagen: {error}")
+
 # ==========================================
 # ADVANCED LOGGING KONFIGURATION
 # ==========================================
 log_file_path = os.path.join(BASE_DIR, "log", "api.log.txt")
+os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 file_handler = RotatingFileHandler(log_file_path, maxBytes=10485760, backupCount=5, encoding='utf-8')
 log_formatter = logging.Formatter(
     '[%(asctime)s] %(levelname)s in %(module)s: %(message)s',
@@ -72,6 +176,7 @@ logging.getLogger('werkzeug').addHandler(file_handler)
 # Verzeichnisse initialisieren
 for folder in [UPLOAD_FOLDER, LATEST_FOLDER, VERSIONS_FOLDER]:
     os.makedirs(folder, exist_ok=True)
+os.makedirs(COREDATA_UPLOAD_FOLDER, exist_ok=True)
 
 # Datenbank-Modell
 class ApkVersion(db.Model):
@@ -193,6 +298,7 @@ class ClientCredentials(db.Model):
     name = db.Column(db.String(100), nullable=False, default="Unbekannt")
     role = db.Column(db.String(20), nullable=False)
     allowed_scopes = db.Column(db.String(200), nullable=False)
+    token_lifetime_seconds = db.Column(db.Integer, nullable=False, default=86400)
 
 class AuthorizationCode(db.Model):
     __tablename__ = 'authorization_codes'
@@ -226,10 +332,259 @@ class UserActionTimeline(db.Model):
     time = db.Column(db.String(8), nullable=False)   # Format: hh-mm-ss
     triggered_action = db.Column(db.String(255), nullable=False)
     username = db.Column(db.String(100), nullable=False)
+
+class ErrorReport(db.Model):
+    __tablename__ = 'error_reports'
+    report_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    severity = db.Column(db.String(10), nullable=False)
+    username = db.Column(db.String(100), nullable=False)
+    app_version = db.Column(db.String(50), nullable=False)
+    error_task = db.Column(db.Text, nullable=False)
+    error = db.Column(db.Text, nullable=False)
+    date = db.Column(db.String(10), nullable=False)
+    time = db.Column(db.String(5), nullable=False)
+    last_action = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
+
+class MassErrorReport(db.Model):
+    __tablename__ = 'mass_errorreport_errors'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user = db.Column(db.String(100), nullable=False)
+    app_version = db.Column(db.String(50), nullable=False)
+    mass_errors = db.Column(db.Text, nullable=False)
+
+
+class Notification(db.Model):
+    __tablename__ = 'notifications'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    title = db.Column(db.String(200), nullable=False)
+    text = db.Column(db.Text, nullable=False)
+    category = db.Column(db.String(100), nullable=False)
+    notification_group = db.Column(db.String(100), nullable=False)
+    png_path = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
+
+
+class NotificationDelivery(db.Model):
+    __tablename__ = 'notification_deliveries'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    notification_id = db.Column(db.Integer, nullable=False, index=True)
+    client_id = db.Column(db.String(80), nullable=False, index=True)
+    delivered_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
+    __table_args__ = (
+        db.UniqueConstraint('notification_id', 'client_id', name='uq_notification_client'),
+    )
+
+
+class PlaylistContent(db.Model):
+    __tablename__ = 'playlist_contents'
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(200), nullable=False, index=True)
+    playlist_id = db.Column(db.String(100), nullable=True, index=True)
+    song_names = db.Column(db.Text, nullable=False)
+    song_ids = db.Column(db.Text, nullable=False)
+    image_links = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
+    updated_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
+
+
+class PlayingPlaylist(db.Model):
+    __tablename__ = 'playing_playlist'
+    id = db.Column(db.Integer, primary_key=True, default=1)
+    playlist_content_id = db.Column(db.Integer, nullable=False)
+    updated_at = db.Column(db.Integer, nullable=False, default=lambda: int(time.time()))
+
+
+with app.app_context():
+    db.create_all()
+    client_columns = {
+        column[1] for column in db.session.execute(db.text("PRAGMA table_info(client_credentials)"))
+    }
+    if 'token_lifetime_seconds' not in client_columns:
+        db.session.execute(db.text(
+            "ALTER TABLE client_credentials "
+            "ADD COLUMN token_lifetime_seconds INTEGER NOT NULL DEFAULT 86400"
+        ))
+        db.session.commit()
     
 
 # Absoluter Pfad zum Basis-Ressourcenordner
 BASE_DIR = os.path.abspath("app_ressources")
+
+def validate_error_report_params():
+    app_version = request.args.get('app-version')
+    error_task = request.args.get('error_task')
+    error = request.args.get('error')
+    report_date = request.args.get('date')
+    report_time = request.args.get('time')
+    last_action = request.args.get('last-action')
+
+    required_params = {
+        'app-version': app_version,
+        'error_task': error_task,
+        'error': error,
+        'date': report_date,
+        'time': report_time,
+        'last-action': last_action,
+    }
+    missing_params = [name for name, value in required_params.items() if value is None]
+    if missing_params:
+        return None, f"Missing query parameters: {', '.join(missing_params)}"
+
+    if not re.fullmatch(r'\d+\.\d+\.\d+', app_version):
+        return None, 'Invalid app-version format. Expected x.y.z.'
+
+    if not re.fullmatch(r'\d{2}\.\d{2}\.(\d{2}|\d{4})', report_date):
+        return None, 'Invalid date format. Expected dd.mm.yyyy or dd.mm.yy.'
+
+    if not re.fullmatch(r'\d{2}\.\d{2}', report_time):
+        return None, 'Invalid time format. Expected hh.mm.'
+
+    return {
+        'app_version': app_version,
+        'error_task': error_task,
+        'error': error,
+        'date': report_date,
+        'time': report_time,
+        'last_action': last_action,
+    }, None
+
+
+def save_error_report(severity, username):
+    report_data, validation_error = validate_error_report_params()
+    if validation_error:
+        return jsonify({'status': 'error', 'message': validation_error}), 400
+
+    report = ErrorReport(severity=severity, username=username, **report_data)
+    db.session.add(report)
+    db.session.commit()
+
+    app.logger.info(f"{severity.upper()} Error-Report gespeichert für User: {username}")
+    return jsonify({'status': 'ok', 'report_id': report.report_id}), 201
+
+
+@app.route('/report/error/soft/<username>', methods=['POST'])
+def report_soft_error(username):
+    return save_error_report('soft', username)
+
+
+@app.route('/report/error/hard/<username>', methods=['POST'])
+def report_hard_error(username):
+    return save_error_report('hard', username)
+
+
+@app.route('/report/error/massreport/<username>', methods=['POST'])
+def report_mass_error(username):
+    app_version = request.args.get('app-version')
+    mass_errors = request.args.get('error')
+
+    missing_params = []
+    if app_version is None:
+        missing_params.append('app-version')
+    if mass_errors is None:
+        missing_params.append('error')
+    if missing_params:
+        return jsonify({'status': 'error', 'message': f"Missing query parameters: {', '.join(missing_params)}"}), 400
+
+    if not re.fullmatch(r'\d+\.\d+\.\d+', app_version):
+        return jsonify({'status': 'error', 'message': 'Invalid app-version format. Expected x.y.z.'}), 400
+
+    report = MassErrorReport(user=username, app_version=app_version, mass_errors=mass_errors)
+    db.session.add(report)
+    db.session.commit()
+
+    app.logger.info(f"Mass-Error-Report gespeichert für User: {username}")
+    return jsonify({'status': 'ok', 'id': report.id}), 201
+
+
+COREDATA_PATTERN = re.compile(
+    r'^Core-Data-Text:\n'
+    r'Core-Data-Abfrage vom (?P<date>\d{2}\.\d{2}\.(?:\d{2}|\d{4})) '
+    r'um (?P<time>\d{2}\.\d{2}) Uhr:\s*\n+'
+    r'App-Versionsname Tasker: (?P<tasker_version>\d+\.\d+\.\d+)\s*\n'
+    r'-_-_-_-_-_-\s*\n'
+    r'App-Paketname: (?P<package>[a-z]+(?:\.[a-z]+)+)\s*\n'
+    r'-_-_-_-_-_-\s*\n'
+    r'Latest App-Versionsname auf Server: (?P<server_version>\d+\.\d+\.\d+)\s*\n'
+    r'-_-_-_-_-_-\s*\n'
+    r'Latest Updatenotes: (?P<update_notes>[\s\S]+?)\n'
+    r'-_-_-_-_-_-\s*\n'
+    r'API-Base-URL: (?P<api_url>https://\S+)\s*\n'
+    r'-_-_-_-_-_-\s*\n'
+    r'-{67}\s*$',
+)
+
+
+def get_coredata_request_text():
+    """Liest Core-Daten bevorzugt aus dem Body, alternativ aus einem benannten Header."""
+    body_text = request.get_data(as_text=True).strip()
+    if body_text:
+        return body_text, 'body'
+
+    header_text = (
+        request.headers.get('Core-Data-Text')
+        or request.headers.get('X-Core-Data-Text')
+    )
+    if header_text:
+        header_text = header_text.replace('\\n', '\n')
+        if not header_text.startswith('Core-Data-Text:'):
+            header_text = f"Core-Data-Text:\n{header_text}"
+        return header_text.strip(), 'header'
+    return None, None
+
+
+@app.route('/coredatas/download', methods=['GET'])
+def download_coredata():
+    """Lädt die bisher gesammelten Core-Data-Abfragen als Textdatei herunter."""
+    if not os.path.isfile(COREDATA_FILE):
+        return jsonify({
+            'status': 'error',
+            'error': 'coredata_file_not_found',
+            'message': 'Es wurden noch keine Core-Daten hochgeladen.',
+        }), 404
+    return send_from_directory(
+        COREDATA_UPLOAD_FOLDER,
+        COREDATA_FILENAME,
+        as_attachment=True,
+        download_name=COREDATA_FILENAME,
+        mimetype='text/plain',
+    )
+
+
+@app.route('/coredatas/upload', methods=['POST'])
+def upload_coredata():
+    """Validiert eine Core-Data-Abfrage und hängt sie an die bestehende Datei an."""
+    coredata_text, source = get_coredata_request_text()
+    if not coredata_text:
+        return jsonify({
+            'status': 'error',
+            'error': 'missing_coredata',
+            'message': 'Core-Daten müssen im Textkörper oder Core-Data-Text-Header stehen.',
+        }), 400
+
+    normalized_text = coredata_text.replace('\r\n', '\n').replace('\r', '\n')
+    if not COREDATA_PATTERN.fullmatch(normalized_text):
+        return jsonify({
+            'status': 'error',
+            'error': 'invalid_coredata_format',
+            'message': 'Die Core-Daten entsprechen nicht dem erwarteten Format.',
+        }), 400
+
+    os.makedirs(COREDATA_UPLOAD_FOLDER, exist_ok=True)
+    with COREDATA_WRITE_LOCK:
+        has_content = os.path.isfile(COREDATA_FILE) and os.path.getsize(COREDATA_FILE) > 0
+        with open(COREDATA_FILE, 'a', encoding='utf-8', newline='\n') as coredata_file:
+            if has_content:
+                coredata_file.write('\n\n')
+            coredata_file.write(normalized_text.rstrip() + '\n')
+
+    app.logger.info(f"Core-Data-Abfrage aus dem {source} an {COREDATA_FILE} angehängt.")
+    return jsonify({
+        'status': 'ok',
+        'source': source,
+        'message': 'Core-Daten wurden an die bestehende Datei angehängt.',
+    }), 201
+
 
 @app.route('/ressources/<path:resource_name>', methods=['GET'])
 def download_resource(resource_name):
@@ -333,6 +688,110 @@ def get_user_position_admin(wert0):
         )
 
     return Response("\n".join(output), mimetype="text/plain")
+
+
+def parse_position_datetime(date_str, time_str):
+    """Konvertiert Positionsdatum/-uhrzeit für Sortierung und Linienbildung."""
+    date_part = parse_custom_date(date_str)
+    time_part = parse_custom_time(time_str)
+    if not date_part or not time_part:
+        return None
+    return datetime.combine(date_part.date(), time_part.time())
+
+
+def haversine_distance_km(lat1, lon1, lat2, lon2):
+    """Berechnet den geographischen Abstand zwischen zwei Punkten in Kilometern."""
+    earth_radius_km = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(delta_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    )
+    return earth_radius_km * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def build_position_map_data():
+    """Liest Positionsdaten aus der Datenbank und bereitet Marker-/Linien-Daten für die Karte vor."""
+    grouped_points = {}
+
+    for row in UserPosition.query.all():
+        try:
+            latitude = float(getattr(row, SPALTE_1))
+            longitude = float(getattr(row, SPALTE_2))
+        except (TypeError, ValueError):
+            app.logger.warning(f"Ungültige Positionskoordinaten für Datensatz {row.id} übersprungen.")
+            continue
+
+        timestamp = parse_position_datetime(getattr(row, SPALTE_4), getattr(row, SPALTE_3))
+        if timestamp is None:
+            app.logger.warning(f"Ungültiger Positionszeitpunkt für Datensatz {row.id} übersprungen.")
+            continue
+
+        grouped_points.setdefault(row.username, []).append({
+            "id": row.id,
+            "username": row.username,
+            "latitude": latitude,
+            "longitude": longitude,
+            "date": getattr(row, SPALTE_4),
+            "time": getattr(row, SPALTE_3),
+            "timestamp": timestamp.isoformat(),
+            "maps_link": getattr(row, SPALTE_5),
+        })
+
+    users = []
+    palette = [
+        "#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c",
+        "#0891b2", "#be123c", "#4f46e5", "#65a30d", "#ca8a04",
+    ]
+
+    for index, username in enumerate(sorted(grouped_points)):
+        points = sorted(grouped_points[username], key=lambda point: point["timestamp"])
+        lines = []
+        current_line = []
+        previous_point = None
+
+        for point in points:
+            starts_new_line = False
+            if previous_point is not None:
+                distance_km = haversine_distance_km(
+                    previous_point["latitude"],
+                    previous_point["longitude"],
+                    point["latitude"],
+                    point["longitude"],
+                )
+                time_delta_seconds = (
+                    datetime.fromisoformat(point["timestamp"])
+                    - datetime.fromisoformat(previous_point["timestamp"])
+                ).total_seconds()
+                starts_new_line = distance_km > 2 or time_delta_seconds > 60 * 60
+
+            if starts_new_line and current_line:
+                lines.append(current_line)
+                current_line = []
+
+            current_line.append([point["latitude"], point["longitude"]])
+            previous_point = point
+
+        if current_line:
+            lines.append(current_line)
+
+        users.append({
+            "username": username,
+            "color": palette[index % len(palette)],
+            "points": points,
+            "lines": lines,
+        })
+
+    return users
+
+
+@app.route('/map', methods=['GET'])
+def position_map():
+    return render_template('map.html', users=build_position_map_data())
 
 
 # Dynamic Model Creation für flexible Spaltennamen
@@ -623,27 +1082,41 @@ def verify_gateway_token(headers):
     auth_header = headers.get('Authorization')
     if not auth_header or not auth_header.startswith('Bearer '):
         app.logger.warning("Verifizierung fehlgeschlagen: Authorization Header fehlt oder ist kein Bearer-Token.")
-        return False, "Missing or malformed Authorization header"
+        return False, {
+            "error": "unauthorized",
+            "message": "Missing or malformed Authorization header",
+            "reauthenticate": True,
+        }
     
     token_str = auth_header.split(' ')[1]
     token_entry = OAuthToken.query.filter_by(access_token=token_str).first()
     
     if not token_entry:
         app.logger.warning(f"Verifizierung fehlgeschlagen: Token '{token_str}' existiert nicht in DB.")
-        return False, "Invalid token"
+        return False, {
+            "error": "invalid_token",
+            "message": "The access token is invalid.",
+            "reauthenticate": True,
+        }
     if token_entry.expires_at < time.time():
         app.logger.warning(f"Verifizierung fehlgeschlagen: Token von Client '{token_entry.client_id}' ist abgelaufen.")
-        return False, "Token expired"
+        return False, {
+            "error": "token_expired",
+            "message": "The access token has expired. Authenticate again to obtain a new token.",
+            "reauthenticate": True,
+            "token_endpoint": "/token",
+            "expired_at": token_entry.expires_at,
+        }
         
     app.logger.debug(f"Gateway-Token verifiziert für Client-ID: {token_entry.client_id}")
     return True, token_entry
 
-def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None):
+def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None, request_body=None):
     """Zentraler Proxy-Abforderer für die dedizierten Routen"""
     app.logger.debug(f"Verarbeite Proxy-Request für Pfad: {target_path} [{method}]")
     is_valid, token_or_err = verify_gateway_token(request.headers)
     if not is_valid:
-        return jsonify({"error": "unauthorized", "message": token_or_err}), 401
+        return jsonify(token_or_err), 401
 
     cfg = get_config()
     app.logger.debug(f"Aktueller Gateway-Modus: {cfg.gateway_mode}")
@@ -660,6 +1133,8 @@ def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None
 
         proxy_headers = {k: v for k, v in request.headers.items() if k.lower() != 'host'}
         proxy_headers['Authorization'] = f"Bearer {spotify_token}"
+        if request_body is not None:
+            proxy_headers['Content-Type'] = 'application/json'
         
         # Bereinige v1-Dopplung und Slashes, da target_path bereits '/v1/...' enthält oder enthalten soll
         clean_path = target_path.lstrip('/')
@@ -674,7 +1149,7 @@ def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None
                 method=method,
                 url=target_url,
                 headers=proxy_headers,
-                data=request.get_data(),
+                data=request.get_data() if request_body is None else request_body,
                 cookies=request.cookies,
                 allow_redirects=False,
                 timeout=10
@@ -690,6 +1165,8 @@ def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None
     # Server-Modus (Lokale Backends durchlaufen)
     app.logger.debug("Server-Modus aktiv. Leite Anfrage an lokale Backends weiter...")
     proxy_headers = {k: v for k, v in request.headers.items() if k.lower() != 'host'}
+    if request_body is not None:
+        proxy_headers['Content-Type'] = 'application/json'
     last_response_data = None
     last_status_code = 502
     proxy_response_headers = {}
@@ -703,7 +1180,7 @@ def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None
                 method=method,
                 url=target_url,
                 headers=proxy_headers,
-                data=request.get_data(),
+                data=request.get_data() if request_body is None else request_body,
                 cookies=request.cookies,
                 allow_redirects=False,
                 timeout=10
@@ -725,6 +1202,107 @@ def execute_proxy_request(target_path, method='GET', custom_spotify_handler=None
     excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'access-control-allow-origin']
     response_headers = [(k, v) for k, v in proxy_response_headers.items() if k.lower() not in excluded_headers]
     return last_response_data, last_status_code, response_headers
+
+
+def validate_notification_form():
+    """Validiert und bereinigt die Eingabefelder einer Benachrichtigung."""
+    values = {
+        'title': request.form.get('title', '').strip(),
+        'text': request.form.get('text', '').strip(),
+        'category': request.form.get('category', '').strip(),
+        'notification_group': request.form.get('notification_group', '').strip(),
+        'png_path': request.form.get('png_path', '').strip() or None,
+    }
+    missing = [
+        field for field in ('title', 'text', 'category', 'notification_group')
+        if not values[field]
+    ]
+    if missing:
+        return None, 'Titel, Text, Categorie und Gruppe sind Pflichtfelder.'
+    if any('|' in value for value in values.values() if value):
+        return None, 'Das Zeichen | ist in Benachrichtigungsfeldern nicht erlaubt.'
+    return values, None
+
+
+@app.route('/notify/new', methods=['GET'])
+def get_new_notification():
+    """Gibt die älteste, vom authentifizierten Client noch nicht empfangene Nachricht zurück."""
+    is_valid, token_or_error = verify_gateway_token(request.headers)
+    if not is_valid:
+        return jsonify(token_or_error), 401
+
+    with NOTIFICATION_DELIVERY_LOCK:
+        delivered_ids = db.select(NotificationDelivery.notification_id).where(
+            NotificationDelivery.client_id == token_or_error.client_id
+        )
+        notification = Notification.query.filter(
+            ~Notification.id.in_(delivered_ids)
+        ).order_by(Notification.created_at.asc(), Notification.id.asc()).first()
+        if notification is None:
+            return Response(status=204)
+
+        db.session.add(NotificationDelivery(
+            notification_id=notification.id,
+            client_id=token_or_error.client_id,
+        ))
+        db.session.commit()
+
+    fields = [
+        notification.title,
+        notification.text,
+        notification.category,
+        notification.notification_group,
+    ]
+    if notification.png_path:
+        fields.append(notification.png_path)
+    return Response('|'.join(fields), content_type='text/plain; charset=utf-8')
+
+
+@app.route('/notify/add', methods=['GET', 'POST'])
+def add_notification():
+    """Zeigt das Formular zum Erstellen einer Benachrichtigung und speichert dessen Inhalt."""
+    if request.method == 'GET':
+        return render_template('notify_add.html')
+
+    values, error = validate_notification_form()
+    if error:
+        return render_template('notify_add.html', error=error, values=request.form), 400
+
+    notification = Notification(**values)
+    db.session.add(notification)
+    db.session.commit()
+    flash('Benachrichtigung wurde gespeichert.', 'success')
+    return redirect('/notify/edit')
+
+
+@app.route('/notify/edit', methods=['GET', 'POST'])
+def edit_notifications():
+    """Zeigt vorhandene Benachrichtigungen und verarbeitet Änderungen oder Löschungen."""
+    error = None
+    if request.method == 'POST':
+        notification_id = request.form.get('notification_id', type=int)
+        notification = db.session.get(Notification, notification_id) if notification_id else None
+        if notification is None:
+            error = 'Die ausgewählte Benachrichtigung wurde nicht gefunden.'
+        elif request.form.get('action') == 'delete':
+            NotificationDelivery.query.filter_by(notification_id=notification.id).delete()
+            db.session.delete(notification)
+            db.session.commit()
+            flash('Benachrichtigung wurde gelöscht.', 'success')
+            return redirect('/notify/edit')
+        else:
+            values, error = validate_notification_form()
+            if not error:
+                for field, value in values.items():
+                    setattr(notification, field, value)
+                db.session.commit()
+                flash('Benachrichtigung wurde aktualisiert.', 'success')
+                return redirect('/notify/edit')
+
+    notifications = Notification.query.order_by(
+        Notification.created_at.desc(), Notification.id.desc()
+    ).all()
+    return render_template('notify_edit.html', notifications=notifications, error=error), 400 if error else 200
 
 # ==========================================
 # DASHBOARD TEMPLATE
@@ -838,6 +1416,10 @@ DASHBOARD_TEMPLATE = """
                             <option value="Server">Server (Scopes: server, hb-server)</option>
                         </select>
                     </div>
+                    <div>
+                        <label class="block text-xs font-medium uppercase tracking-wider text-gray-400 mb-1">Schlüssel-Gültigkeit (Minuten)</label>
+                        <input type="number" name="token_lifetime_minutes" min="1" max="525600" value="1440" required class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:border-blue-500">
+                    </div>
                     <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2 rounded transition shadow-lg">
                         Zugangsdaten generieren
                     </button>
@@ -855,6 +1437,7 @@ DASHBOARD_TEMPLATE = """
                                 <th class="p-3">Client Secret</th>
                                 <th class="p-3">Rolle</th>
                                 <th class="p-3">Zugelassene Scopes</th>
+                                <th class="p-3">Schlüssel-Gültigkeit</th>
                                 <th class="p-3 text-right">Aktion</th>
                             </tr>
                         </thead>
@@ -873,6 +1456,13 @@ DASHBOARD_TEMPLATE = """
                                     </span>
                                 </td>
                                 <td class="p-3 font-mono text-xs text-gray-400">{{ client.allowed_scopes }}</td>
+                                <td class="p-3">
+                                    <form action="/dashboard/client/token-lifetime/{{ client.id }}" method="POST" class="flex items-center gap-2">
+                                        <input type="number" name="token_lifetime_minutes" min="1" max="525600" value="{{ (client.token_lifetime_seconds / 60)|int }}" required class="w-24 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-white">
+                                        <span class="text-xs text-gray-400">Min.</span>
+                                        <button type="submit" class="text-blue-400 hover:text-blue-300 font-medium">Speichern</button>
+                                    </form>
+                                </td>
                                 <td class="p-3 text-right">
                                     <a href="/dashboard/client/delete/{{ client.id }}" class="text-red-400 hover:text-red-300 font-medium transition" onclick="return confirm('Client unwiderruflich löschen?')">Löschen</a>
                                 </td>
@@ -891,6 +1481,83 @@ DASHBOARD_TEMPLATE = """
 # ==========================================
 # APK-Versionshandler / Autoupdater
 # ==========================================
+
+@app.route('/apk/online', methods=['GET', 'POST'])
+def upload_apk_online():
+    if request.method == 'GET':
+        return render_template('upload.html')
+
+    version = request.form.get('version', '').strip()
+    apk_file = request.files.get('apk_file')
+
+    if not re.fullmatch(r'\d+\.\d+\.\d+', version):
+        return render_template('upload.html', error='Bitte gib eine Versionsnummer im Format x.y.z an.', version=version), 400
+
+    if apk_file is None or apk_file.filename == '':
+        return render_template('upload.html', error='Bitte wähle eine .apk-Datei aus.', version=version), 400
+
+    original_filename = secure_filename(apk_file.filename)
+    if not original_filename.lower().endswith('.apk'):
+        return render_template('upload.html', error='Bitte wähle eine Datei mit der Endung .apk aus.', version=version), 400
+
+    n_filename = f"{version}.apk"
+    n_path = os.path.join(UPLOAD_FOLDER, n_filename)
+
+    bytes_received = 0
+    try:
+        with open(n_path, 'wb') as f:
+            while True:
+                chunk = apk_file.stream.read(1048576)
+                if not chunk:
+                    break
+                f.write(chunk)
+                bytes_received += len(chunk)
+    except Exception as e:
+        app.logger.error(f"Fehler beim Online-APK-Upload-Streaming: {str(e)}")
+        if os.path.exists(n_path):
+            os.remove(n_path)
+        return render_template('upload.html', error=f'Upload failed during streaming: {str(e)}', version=version), 500
+
+    if bytes_received == 0:
+        if os.path.exists(n_path):
+            os.remove(n_path)
+        return render_template('upload.html', error='Die hochgeladene Datei ist leer.', version=version), 400
+
+    app.logger.info(f"Online-APK erfolgreich gestreamt. Größe: {bytes_received} Bytes.")
+
+    # Ab hier startet derselbe Verarbeitungsprozess wie beim rohen APK-Upload.
+    l_filename, l_version_str = get_latest_apk_info()
+
+    if l_filename is None:
+        move(n_path, os.path.join(LATEST_FOLDER, n_filename))
+        return render_template('upload.html', success='Initial APK uploaded successfully as latest', version=''), 201
+
+    n_ver = parse_version(version)
+    l_ver = parse_version(l_version_str)
+
+    if n_ver > l_ver:
+        target_dir = os.path.join(VERSIONS_FOLDER, l_version_str)
+        os.makedirs(target_dir, exist_ok=True)
+        move(os.path.join(LATEST_FOLDER, l_filename), os.path.join(target_dir, l_filename))
+        save_version_to_db(l_version_str)
+        move(n_path, os.path.join(LATEST_FOLDER, n_filename))
+
+    elif n_ver < l_ver:
+        target_dir = os.path.join(VERSIONS_FOLDER, version)
+        os.makedirs(target_dir, exist_ok=True)
+        move(n_path, os.path.join(target_dir, n_filename))
+        save_version_to_db(version)
+
+    else:
+        suffix_version, target_dir = get_next_suffix_version(l_version_str)
+        os.makedirs(target_dir, exist_ok=True)
+        suffix_filename = f"{suffix_version}.apk"
+        move(os.path.join(LATEST_FOLDER, l_filename), os.path.join(target_dir, suffix_filename))
+        save_version_to_db(suffix_version)
+        move(n_path, os.path.join(LATEST_FOLDER, n_filename))
+
+    return render_template('upload.html', success='APK processed successfully', version=''), 200
+
 ## 1. Route: APK Upload (Akzeptiert rohen Binärstream von Tasker)
 @app.route('/apk/upload/<version>', methods=['POST'])
 def upload_apk(version):
@@ -1006,6 +1673,137 @@ def download_specific_version(version):
 # ==========================================
 # DEFINIERTE PLAYER ENDPUNKTE
 # ==========================================
+
+
+def parse_playlist_values(value):
+    """Teilt eine kommaseparierte Query-Angabe und erhält bewusst leere Bildeinträge."""
+    if value is None:
+        return None
+    return [item.strip() for item in value.split(',')]
+
+
+def find_playlist_content(name, playlist_id=None):
+    """Sucht eine gespeicherte Playlist bevorzugt anhand ihrer Spotify-ID."""
+    query = PlaylistContent.query
+    if playlist_id:
+        return query.filter_by(playlist_id=playlist_id).order_by(PlaylistContent.updated_at.desc()).first()
+    return query.filter_by(name=name).order_by(PlaylistContent.updated_at.desc()).first()
+
+
+def serialize_playlist_content(playlist):
+    """Gibt gespeicherten Playlistinhalt als strukturiertes JSON-kompatibles Objekt zurück."""
+    names = json.loads(playlist.song_names)
+    song_ids = json.loads(playlist.song_ids)
+    images = json.loads(playlist.image_links)
+    return {
+        'name': playlist.name,
+        'playlist_id': playlist.playlist_id,
+        'content': names,
+        'ids': song_ids,
+        'bilder': images,
+        'songs': [
+            {'name': name, 'id': song_id, 'bild': images[index] or None}
+            for index, (name, song_id) in enumerate(zip(names, song_ids))
+        ],
+    }
+
+
+def format_playlist_content(playlist):
+    """Formatiert Playlistdaten im vom Musik-Client erwarteten Textformat."""
+    names = json.loads(playlist.song_names)
+    song_ids = json.loads(playlist.song_ids)
+    images = json.loads(playlist.image_links)
+    return "\n___\n".join((
+        ','.join(names),
+        ','.join(song_ids),
+        ','.join(images),
+        playlist.name,
+        playlist.playlist_id or '',
+    ))
+
+
+@app.route('/playlistcontent/list', methods=['POST'])
+def save_playlist_content():
+    """Speichert oder aktualisiert den per Query-Parametern übertragenen Playlistinhalt."""
+    name = request.args.get('name', '').strip()
+    names = parse_playlist_values(request.args.get('content'))
+    song_ids = parse_playlist_values(request.args.get('ids'))
+    images = parse_playlist_values(request.args.get('bilder'))
+    playlist_id = request.args.get('pl-id', '').strip() or None
+
+    if not name or names is None or song_ids is None:
+        return jsonify({
+            'status': 'error',
+            'message': 'name, content und ids sind Pflichtangaben.',
+        }), 400
+    if not names or any(not item for item in names) or any(not item for item in song_ids):
+        return jsonify({'status': 'error', 'message': 'Songnamen und Song-IDs dürfen nicht leer sein.'}), 400
+    if len(names) != len(song_ids):
+        return jsonify({'status': 'error', 'message': 'content und ids müssen gleich viele Einträge enthalten.'}), 400
+    if images is None or images == ['']:
+        images = [''] * len(names)
+    if len(images) != len(names):
+        return jsonify({'status': 'error', 'message': 'bilder muss gleich viele Einträge wie content enthalten.'}), 400
+
+    playlist = find_playlist_content(name, playlist_id)
+    if playlist is None:
+        playlist = PlaylistContent(name=name, playlist_id=playlist_id)
+        db.session.add(playlist)
+    playlist.name = name
+    if playlist_id is not None:
+        playlist.playlist_id = playlist_id
+    playlist.song_names = json.dumps(names, ensure_ascii=False)
+    playlist.song_ids = json.dumps(song_ids, ensure_ascii=False)
+    playlist.image_links = json.dumps(images, ensure_ascii=False)
+    playlist.updated_at = int(time.time())
+    db.session.commit()
+    return jsonify({'status': 'ok', 'playlist': serialize_playlist_content(playlist)}), 201
+
+
+@app.route('/playlistcontent/get/<path:playlist_name>', methods=['GET'])
+def get_playlist_content(playlist_name):
+    """Liefert die aktuell spielende oder eine namentlich beziehungsweise per ID gewählte Playlist."""
+    playlist_id = request.args.get('id', '').strip() or None
+    if playlist_name.lower() == 'playing':
+        playing = db.session.get(PlayingPlaylist, 1)
+        playlist = db.session.get(PlaylistContent, playing.playlist_content_id) if playing else None
+    else:
+        playlist = find_playlist_content(playlist_name, playlist_id)
+    if playlist is None:
+        return jsonify({'status': 'error', 'message': 'Playlist wurde nicht gefunden.'}), 404
+    return format_playlist_content(playlist), 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
+
+@app.route('/playlist/play/<path:playlist_name>', methods=['POST'])
+def play_playlist(playlist_name):
+    """Startet die angegebene gespeicherte Playlist über die Spotify-Playback-API."""
+    playlist_id = request.args.get('id', '').strip() or None
+    playlist = find_playlist_content(playlist_name, playlist_id)
+    if playlist is None:
+        return jsonify({'status': 'error', 'message': 'Playlist wurde nicht gefunden.'}), 404
+    if not playlist.playlist_id:
+        return jsonify({
+            'status': 'error',
+            'message': 'Zum Abspielen ist eine Spotify Playlist-ID erforderlich.',
+        }), 400
+
+    spotify_body = json.dumps({'context_uri': f'spotify:playlist:{playlist.playlist_id}'})
+    response = execute_proxy_request(
+        '/v1/me/player/play',
+        method='PUT',
+        request_body=spotify_body,
+    )
+    status_code = response[1] if isinstance(response, tuple) else response.status_code
+    if 200 <= status_code < 300:
+        playing = db.session.get(PlayingPlaylist, 1)
+        if playing is None:
+            playing = PlayingPlaylist(id=1, playlist_content_id=playlist.id)
+            db.session.add(playing)
+        playing.playlist_content_id = playlist.id
+        playing.updated_at = int(time.time())
+        db.session.commit()
+    return response
+
 
 @app.route('/player', methods=['GET'])
 def get_player_status():
@@ -1321,11 +2119,12 @@ def token():
         return jsonify({"error": "unsupported_grant_type"}), 400
 
     access_token = "hbc_" + secrets.token_urlsafe(64)
+    token_lifetime = client.token_lifetime_seconds or 86400
     token_entry = OAuthToken(
         access_token=access_token,
         client_id=client_id,
         scope=client.allowed_scopes,
-        expires_at=int(time.time()) + 3600 * 24
+        expires_at=int(time.time()) + token_lifetime
     )
     db.session.add(token_entry)
     db.session.commit()
@@ -1334,7 +2133,7 @@ def token():
     return jsonify({
         "access_token": access_token,
         "token_type": "Bearer",
-        "expires_in": 3600 * 24,
+        "expires_in": token_lifetime,
         "scope": client.allowed_scopes
     })
 
@@ -1428,6 +2227,14 @@ def create_client():
     custom_id = request.form.get('custom_client_id', '').strip()
     custom_secret = request.form.get('custom_client_secret', '').strip()
 
+    try:
+        token_lifetime_minutes = int(request.form.get('token_lifetime_minutes', '1440'))
+    except ValueError:
+        token_lifetime_minutes = 0
+    if not 1 <= token_lifetime_minutes <= 525600:
+        flash("Die Schlüssel-Gültigkeit muss zwischen 1 und 525600 Minuten liegen.", "error")
+        return redirect('/dashboard')
+
     if role not in ROLE_SCOPES:
         flash("Ungültige Rolle ausgewählt.", "error")
         return redirect('/dashboard')
@@ -1452,7 +2259,8 @@ def create_client():
         client_secret_plain=raw_client_secret,
         name=name,
         role=role,
-        allowed_scopes=scopes_str
+        allowed_scopes=scopes_str,
+        token_lifetime_seconds=token_lifetime_minutes * 60,
     )
     db.session.add(new_client)
     db.session.commit()
@@ -1460,6 +2268,251 @@ def create_client():
     app.logger.info(f"Neuer API-Client über Dashboard generiert. ID: {raw_client_id}, Rolle: {role}, Zuordnung: {name}")
     flash(f"Client erfolgreich erstellt!<br><b>Zuordnung:</b> {name}<br><b>Client-ID:</b> <code class='bg-gray-900 px-1 text-yellow-400 font-mono'>{raw_client_id}</code><br><b>Client-Secret:</b> <code class='bg-gray-900 px-1 text-emerald-400 font-mono'>{raw_client_secret}</code>", "success")
     return redirect('/dashboard')
+
+
+@app.route('/dashboard/client/token-lifetime/<int:id>', methods=['POST'])
+def update_client_token_lifetime(id):
+    client = ClientCredentials.query.get_or_404(id)
+    try:
+        token_lifetime_minutes = int(request.form.get('token_lifetime_minutes', ''))
+    except ValueError:
+        token_lifetime_minutes = 0
+
+    if not 1 <= token_lifetime_minutes <= 525600:
+        flash("Die Schlüssel-Gültigkeit muss zwischen 1 und 525600 Minuten liegen.", "error")
+        return redirect('/dashboard')
+
+    client.token_lifetime_seconds = token_lifetime_minutes * 60
+    db.session.commit()
+    app.logger.info(
+        f"Token-Gültigkeit für Client {client.client_id} auf "
+        f"{token_lifetime_minutes} Minuten geändert."
+    )
+    flash(f"Schlüssel-Gültigkeit für {client.name} gespeichert.", "success")
+    return redirect('/dashboard')
+
+
+def route_example_url(rule):
+    """Ersetzt dynamische URL-Parameter durch anklickbare Beispielwerte."""
+    examples = {
+        'id': '1',
+        'username': 'username',
+        'version': '1.0.0',
+        'song_id': 'song-id',
+    }
+
+    def replace_parameter(match):
+        parameter = match.group(1).split(':')[-1]
+        return examples.get(parameter, 'value')
+
+    return re.sub(r'<([^>]+)>', replace_parameter, rule)
+
+
+PARAMETER_DETAILS = {
+    'username': ('Benutzername, dem der Request zugeordnet wird.', 'Freier Text als URL-Pfadsegment'),
+    'id': ('Eindeutige numerische ID des Datensatzes.', 'Positive Ganzzahl'),
+    'version': ('Versionsnummer der App oder APK.', 'x.y.z, zum Beispiel 4.1.0'),
+    'app-version': ('Version der meldenden App.', 'x.y.z, zum Beispiel 4.1.0'),
+    'error': ('Fehlermeldung beziehungsweise Fehlerprotokoll.', 'URL-kodierter Freitext; Sonderzeichen und Zeilenumbrüche erlaubt'),
+    'error_task': ('Task oder Arbeitsschritt, bei dem der Fehler auftrat.', 'URL-kodierter Freitext'),
+    'date': ('Datum des Ereignisses.', 'dd.mm.yy oder dd.mm.yyyy'),
+    'time': ('Uhrzeit des Ereignisses.', 'hh.mm'),
+    'last-action': ('Zuletzt ausgeführte Aktion.', 'URL-kodierter Freitext'),
+    'client_id': ('OAuth-Client-ID.', 'Textwert der registrierten Client-ID'),
+    'client_secret': ('OAuth-Client-Secret.', 'Geheimer Textwert'),
+    'grant_type': ('Verwendeter OAuth-Grant.', 'authorization_code oder client_credentials'),
+    'redirect_uri': ('Zieladresse nach der Autorisierung.', 'Erlaubte absolute HTTPS-URL'),
+    'scope': ('Angeforderte Berechtigungen.', 'Leerzeichengetrennte Scope-Liste'),
+    'state': ('Vom Client gesetzter OAuth-Statuswert.', 'Beliebiger URL-kodierter Text'),
+    'code': ('Kurzlebiger OAuth-Autorisierungscode.', 'Vom /authorize-Endpunkt ausgegebener Textwert'),
+    'song_id': ('Spotify-ID des Songs.', 'Spotify Track-ID als Text'),
+    'value': ('Wert für die gewählte Aktion.', 'Vom Endpunkt abhängiger Textwert'),
+    'format': ('Erzwingt das Ausgabeformat der Routenliste.', 'html oder text'),
+    'token_lifetime_minutes': ('Gültigkeitsdauer eines Access-Tokens.', 'Ganzzahl zwischen 1 und 525600'),
+    'apk_file': ('APK-Datei, die hochgeladen wird.', 'Multipart-Datei mit Endung .apk'),
+    'lat': ('Geographischer Breitengrad der Position.', 'Dezimalgrad, zum Beispiel 52.520008'),
+    'lon': ('Geographischer Längengrad der Position.', 'Dezimalgrad, zum Beispiel 13.404954'),
+    'maps_url': ('Link zur Position in einem Kartendienst.', 'Vollständige URL, URL-kodiert'),
+    'admin': ('Name des Administrators.', 'In ADMIN_USERS eingetragener Benutzername'),
+    'passwd': ('Passwort für den administrativen Request.', 'Textwert des konfigurierten Admin-Passworts'),
+    'core_data': ('Vollständiger Core-Data-Textblock.', 'Mehrzeiliger UTF-8-Text im dokumentierten Core-Data-Format'),
+    'name': ('Name der zu speichernden Playlist.', 'Freier URL-kodierter Text'),
+    'content': ('Namen der Songs in ihrer Playlist-Reihenfolge.', 'Durch Kommas getrennte Songnamen'),
+    'ids': ('Spotify-IDs der Songs in derselben Reihenfolge.', 'Durch Kommas getrennte Spotify Track-IDs'),
+    'bilder': ('Bildlinks passend zu den Songs.', 'Durch Kommas getrennte HTTPS-Links; einzelne Einträge dürfen leer sein'),
+    'pl-id': ('Spotify-ID der Playlist.', 'Spotify Playlist-ID als Text'),
+}
+
+ROUTE_PARAMETER_OVERRIDES = {
+    'upload_apk_online': [('form', 'version', True), ('file', 'apk_file', True)],
+    'list_routes': [('query', 'format', False)],
+    'authorize': [('query', 'scope', False), ('query', 'state', False)],
+    'spotify_callback': [('query', 'error', False)],
+    'upload_coredata': [('body', 'core_data', True)],
+    'save_playlist_content': [
+        ('query', 'name', True),
+        ('query', 'content', True),
+        ('query', 'ids', True),
+        ('query', 'bilder', False),
+        ('query', 'pl-id', False),
+    ],
+    'get_playlist_content': [('query', 'id', False)],
+    'play_playlist': [('query', 'id', False)],
+}
+
+
+def extract_request_parameters(view_function, visited=None):
+    """Liest Request-Parameter auch aus aufgerufenen lokalen Hilfsfunktionen."""
+    parameters = []
+    visited = visited or set()
+    if view_function in visited:
+        return parameters
+    visited.add(view_function)
+    try:
+        tree = ast.parse(inspect.getsource(view_function))
+    except (OSError, TypeError, IndentationError, SyntaxError):
+        return parameters
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        owner = node.func.value
+        if not isinstance(owner, ast.Attribute) or not isinstance(owner.value, ast.Name):
+            continue
+        if owner.value.id != 'request' or node.func.attr != 'get' or not node.args:
+            continue
+        if owner.attr not in {'args', 'form', 'files'}:
+            continue
+        parameter_name = None
+        if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+            parameter_name = node.args[0].value
+        elif isinstance(node.args[0], ast.Name):
+            configured_name = view_function.__globals__.get(node.args[0].id)
+            if isinstance(configured_name, str):
+                parameter_name = configured_name
+        if parameter_name is None:
+            continue
+        parameter_type = {'args': 'query', 'form': 'form', 'files': 'file'}[owner.attr]
+        required = len(node.args) == 1 or (
+            len(node.args) > 1
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value is None
+        )
+        parameters.append((parameter_type, parameter_name, required))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        helper = view_function.__globals__.get(node.func.id)
+        if (
+            inspect.isfunction(helper)
+            and getattr(helper, '__module__', None) == __name__
+            and helper not in visited
+        ):
+            parameters.extend(extract_request_parameters(helper, visited))
+    return parameters
+
+
+def describe_parameter(parameter_type, name, required, converter=None):
+    purpose, value_format = PARAMETER_DETAILS.get(
+        name,
+        (f"Wert für den Parameter {name}.", 'Textwert; Details richten sich nach dem Endpunkt'),
+    )
+    if parameter_type == 'path' and converter:
+        value_format = {
+            'int': 'Ganzzahl als URL-Pfadsegment',
+            'float': 'Dezimalzahl als URL-Pfadsegment',
+            'path': 'URL-Pfad, darf Schrägstriche enthalten',
+            'string': value_format,
+        }.get(converter, value_format)
+    return {
+        'name': name,
+        'location': parameter_type,
+        'required': required,
+        'purpose': purpose,
+        'format': value_format,
+    }
+
+
+def collect_routes():
+    """Erfasst bei jedem Aufruf alle aktuell registrierten Anwendungsrouten."""
+    routes = []
+    for rule in sorted(app.url_map.iter_rules(), key=lambda item: item.rule):
+        if rule.endpoint == 'static':
+            continue
+        methods = sorted(rule.methods - {'HEAD', 'OPTIONS'})
+        view_function = app.view_functions.get(rule.endpoint)
+        try:
+            source = inspect.getsource(view_function) if view_function else ''
+        except (OSError, TypeError):
+            source = ''
+        description = (
+            view_function.__doc__.strip().splitlines()[0]
+            if view_function and view_function.__doc__
+            else f"Endpunkt {rule.endpoint.replace('_', ' ')}"
+        )
+        parameters = []
+        for converter, name in re.findall(r'<(?:(\w+):)?(\w+)>', rule.rule):
+            parameters.append(describe_parameter('path', name, True, converter or 'string'))
+        detected_parameters = list(ROUTE_PARAMETER_OVERRIDES.get(rule.endpoint, []))
+        detected_parameters.extend(extract_request_parameters(view_function) if view_function else [])
+        known_parameters = {(item['location'], item['name']) for item in parameters}
+        for parameter_type, name, required in detected_parameters:
+            if (parameter_type, name) not in known_parameters:
+                parameters.append(describe_parameter(parameter_type, name, required))
+                known_parameters.add((parameter_type, name))
+        if rule.endpoint in {'get_playlist_content', 'play_playlist'}:
+            for parameter in parameters:
+                if parameter['location'] == 'query' and parameter['name'] == 'id':
+                    parameter['purpose'] = 'Optionale Spotify-ID zur eindeutigen Auswahl der Playlist.'
+                    parameter['format'] = 'Spotify Playlist-ID als Text'
+        query_parameters = [item for item in parameters if item['location'] == 'query']
+        query_example = '&'.join(
+            f"{item['name']}=<{item['format']}>" for item in query_parameters
+        )
+        authentication = (
+            'execute_proxy_request' in source
+            or 'verify_gateway_token' in source
+            or rule.rule in {'/authorize', '/token'}
+        )
+        routes.append({
+            'rule': rule.rule,
+            'url': route_example_url(rule.rule),
+            'methods': methods,
+            'description': description,
+            'parameters': parameters,
+            'query_parameters': query_parameters,
+            'query_example': query_example,
+            'authentication': authentication,
+            'browser_compatible': (
+                'GET' in methods
+                and not authentication
+                and not any(
+                    item['required'] and item['location'] in {'path', 'query'}
+                    for item in parameters
+                )
+            ),
+        })
+    return routes
+
+
+@app.route('/routes', methods=['GET'])
+def list_routes():
+    """Zeigt alle aktuell in der Flask-Anwendung registrierten Routen an."""
+    routes = collect_routes()
+    requested_format = request.args.get('format')
+    wants_html = requested_format == 'html' or (
+        requested_format != 'text'
+        and request.accept_mimetypes.best_match(['text/html', 'text/plain']) == 'text/html'
+    )
+    if wants_html:
+        return render_template('routes.html', routes=routes)
+
+    return Response(
+        ';'.join(route['rule'] for route in routes),
+        content_type='text/plain; charset=utf-8',
+    )
+
 
 @app.route('/dashboard/client/delete/<int:id>', methods=['GET'])
 def delete_client(id):
