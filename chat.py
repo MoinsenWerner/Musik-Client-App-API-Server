@@ -63,10 +63,12 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     content TEXT,
     file_upload_id INTEGER,
     image_upload_id INTEGER,
+    reply_to_message_id INTEGER,
     created_at INTEGER NOT NULL,
     FOREIGN KEY (group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,
     FOREIGN KEY (file_upload_id) REFERENCES chat_uploads(id),
     FOREIGN KEY (image_upload_id) REFERENCES chat_uploads(id),
+    FOREIGN KEY (reply_to_message_id) REFERENCES chat_messages(id),
     CHECK ((recipient IS NOT NULL AND group_id IS NULL) OR
            (recipient IS NULL AND group_id IS NOT NULL))
 );
@@ -94,6 +96,13 @@ def initialize_chat_storage():
     with sqlite3.connect(CHAT_DATABASE_FILE) as connection:
         connection.execute('PRAGMA foreign_keys = ON')
         connection.executescript(SCHEMA)
+        message_columns = {
+            column[1] for column in connection.execute('PRAGMA table_info(chat_messages)')
+        }
+        if 'reply_to_message_id' not in message_columns:
+            connection.execute(
+                'ALTER TABLE chat_messages ADD COLUMN reply_to_message_id INTEGER'
+            )
 
 
 @contextmanager
@@ -148,6 +157,7 @@ def insert_message(sender, recipient, group_id, message_type):
     content = request.args.get('inhalt', '').strip() or None
     file_response_id = request.args.get('datei-upload', '').strip() or None
     image_response_id = request.args.get('bild-upload', '').strip() or None
+    reply_to_raw = request.args.get('antwort-auf', '').strip() or None
     try:
         sender = clean_identity(sender, 'sender')
         recipient = clean_identity(recipient, 'empfänger') if recipient is not None else None
@@ -155,11 +165,32 @@ def insert_message(sender, recipient, group_id, message_type):
             file_upload = get_upload(connection, file_response_id, 'datei')
             image_upload = get_upload(connection, image_response_id, 'bild')
             validate_message(message_type, content, file_upload, image_upload)
+            try:
+                reply_to_message_id = int(reply_to_raw) if reply_to_raw else None
+            except ValueError as error:
+                raise ValueError('antwort-auf muss eine Nachrichten-ID sein.') from error
+            if reply_to_message_id is not None:
+                replied_message = connection.execute(
+                    'SELECT sender, recipient, group_id FROM chat_messages WHERE id = ?',
+                    (reply_to_message_id,),
+                ).fetchone()
+                if replied_message is None:
+                    raise ValueError('Die beantwortete Nachricht wurde nicht gefunden.')
+                same_group = group_id is not None and replied_message['group_id'] == group_id
+                same_direct_chat = (
+                    group_id is None
+                    and replied_message['group_id'] is None
+                    and {sender, recipient} == {
+                        replied_message['sender'], replied_message['recipient'],
+                    }
+                )
+                if not same_group and not same_direct_chat:
+                    raise ValueError('Die beantwortete Nachricht gehört nicht zu diesem Chat.')
             cursor = connection.execute(
                 """INSERT INTO chat_messages
                    (sender, recipient, group_id, message_type, content,
-                    file_upload_id, image_upload_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    file_upload_id, image_upload_id, reply_to_message_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     sender,
                     recipient,
@@ -168,6 +199,7 @@ def insert_message(sender, recipient, group_id, message_type):
                     content,
                     file_upload['id'] if file_upload else None,
                     image_upload['id'] if image_upload else None,
+                    reply_to_message_id,
                     int(time.time()),
                 ),
             )
@@ -188,16 +220,30 @@ def serialize_message(row):
         'inhalt': row['content'],
         'datei_upload': row['file_response_id'],
         'bild_upload': row['image_response_id'],
+        'datei_name': row['file_original_name'],
+        'datei_mime_type': row['file_mime_type'],
+        'bild_name': row['image_original_name'],
+        'bild_mime_type': row['image_mime_type'],
+        'antwort_auf': row['reply_to_message_id'],
+        'antwort_sender': row['reply_sender'],
+        'antwort_inhalt': row['reply_content'],
         'created_at': row['created_at'],
     }
 
 
 def message_select(where_clause, parameters, limit, offset):
     query = f"""SELECT m.*, file.response_id AS file_response_id,
-                       image.response_id AS image_response_id
+                       file.original_name AS file_original_name,
+                       file.mime_type AS file_mime_type,
+                       image.response_id AS image_response_id,
+                       image.original_name AS image_original_name,
+                       image.mime_type AS image_mime_type,
+                       reply.sender AS reply_sender,
+                       reply.content AS reply_content
                 FROM chat_messages AS m
                 LEFT JOIN chat_uploads AS file ON file.id = m.file_upload_id
                 LEFT JOIN chat_uploads AS image ON image.id = m.image_upload_id
+                LEFT JOIN chat_messages AS reply ON reply.id = m.reply_to_message_id
                 WHERE {where_clause}
                 ORDER BY m.created_at ASC, m.id ASC
                 LIMIT ? OFFSET ?"""
@@ -312,7 +358,7 @@ def create_chat_blueprint():
         return send_from_directory(
             CHAT_UPLOAD_FOLDER,
             upload['stored_name'],
-            as_attachment=True,
+            as_attachment=request.args.get('inline') != '1',
             download_name=upload['original_name'],
         )
 

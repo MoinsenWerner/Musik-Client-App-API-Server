@@ -1,177 +1,50 @@
 <!doctype html>
 <html lang="de">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Musik Client Webchat</title>
-    <style>
-        :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; --bg:#070b14; --panel:#111827; --line:#263449; --blue:#3b82f6; --muted:#94a3b8; }
-        * { box-sizing: border-box; }
-        body { margin:0; min-height:100vh; background:radial-gradient(circle at top left,#14203a,var(--bg) 45%); color:#e5e7eb; }
-        button,input,select,textarea { font:inherit; }
-        button { border:0; border-radius:.55rem; padding:.65rem .9rem; cursor:pointer; color:white; background:#2563eb; font-weight:700; }
-        button.secondary { background:#334155; } button.danger { background:#b91c1c; }
-        input,select,textarea { width:100%; border:1px solid #334155; border-radius:.55rem; padding:.68rem; background:#0b1220; color:#f8fafc; }
-        textarea { resize:vertical; min-height:6rem; }
-        label { display:grid; gap:.35rem; color:#cbd5e1; font-size:.88rem; }
-        .shell { display:grid; grid-template-columns:16rem 1fr; min-height:100vh; }
-        aside { padding:1.4rem; background:rgba(15,23,42,.92); border-right:1px solid var(--line); }
-        .brand { font-size:1.35rem; font-weight:900; margin-bottom:.25rem; } .muted { color:var(--muted); }
-        nav { display:grid; gap:.45rem; margin-top:2rem; }
-        nav button { text-align:left; background:transparent; color:#cbd5e1; }
-        nav button.active,nav button:hover { background:#1e293b; color:white; }
-        main { padding:2rem; max-width:1200px; width:100%; margin:auto; }
-        .view { display:none; } .view.active { display:block; }
-        .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; }
-        .card { background:rgba(17,24,39,.94); border:1px solid var(--line); border-radius:1rem; padding:1.15rem; box-shadow:0 16px 40px #0004; }
-        .card h2,.card h3 { margin-top:0; } .stack { display:grid; gap:.8rem; }
-        .row { display:flex; gap:.7rem; align-items:end; } .row > * { flex:1; }
-        .output { margin-top:1rem; min-height:7rem; max-height:28rem; overflow:auto; padding:.8rem; background:#070b14; border:1px solid #1e293b; border-radius:.7rem; white-space:pre-wrap; overflow-wrap:anywhere; }
-        .message { padding:.7rem; margin:.45rem 0; border-radius:.75rem; background:#1e293b; }
-        .message.own { background:#1d4ed8; margin-left:12%; } .message.assistant { background:#312e81; }
-        .meta { font-size:.75rem; color:#bfdbfe; margin-bottom:.25rem; }
-        .status { position:fixed; right:1rem; bottom:1rem; max-width:28rem; padding:.8rem 1rem; border-radius:.7rem; background:#065f46; box-shadow:0 8px 30px #0008; display:none; z-index:20; }
-        .status.error { background:#991b1b; }
-        .login-overlay { position:fixed; inset:0; z-index:100; display:grid; place-items:center; padding:1rem; background:rgba(2,6,23,.94); backdrop-filter:blur(12px); }
-        .login-overlay.hidden { display:none; }
-        .login-card { width:min(28rem,100%); padding:2rem; border:1px solid #334155; border-radius:1.1rem; background:#111827; box-shadow:0 30px 80px #000a; }
-        .login-error { color:#fca5a5; min-height:1.3rem; }
-        .upload-id { font-family:ui-monospace,monospace; color:#93c5fd; user-select:all; }
-        a { color:#93c5fd; }
-        @media(max-width:800px){.shell{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid var(--line)}nav{grid-template-columns:repeat(3,1fr);margin-top:1rem}.grid{grid-template-columns:1fr}main{padding:1rem}.row{flex-direction:column;align-items:stretch}}
-    </style>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Musik Webchat</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;--wa:#202c33;--side:#111b21;--chat:#0b141a;--green:#00a884;--bubble:#005c4b;--other:#202c33;--line:#2a3942;--muted:#8696a0}*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:#0c1317;color:#e9edef;height:100vh;overflow:hidden}button,input,select,textarea{font:inherit}button{border:0;color:#e9edef;background:#2a3942;border-radius:.55rem;padding:.65rem .85rem;cursor:pointer}button.primary{background:var(--green);color:#071b16;font-weight:800}button.danger{background:#9f2631}input,select,textarea{width:100%;border:1px solid var(--line);background:#202c33;color:#e9edef;border-radius:.55rem;padding:.65rem}label{display:grid;gap:.3rem;color:#aebac1;font-size:.82rem}.app{height:100vh;display:grid;grid-template-columns:340px 1fr}.sidebar{background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}.side-head,.chat-head{height:64px;background:var(--wa);display:flex;align-items:center;gap:.7rem;padding:.7rem 1rem}.avatar{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#00a884,#53bdeb);color:#062b25;font-weight:900}.identity{min-width:0;flex:1}.identity strong,.identity span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.identity span{color:var(--muted);font-size:.78rem}.nav{display:grid;grid-template-columns:repeat(4,1fr);gap:.3rem;padding:.6rem;border-bottom:1px solid var(--line)}.nav button{padding:.55rem .2rem;background:transparent;color:#aebac1;font-size:.8rem}.nav button.active{color:var(--green);background:#202c33}.panel{display:none;padding:1rem;overflow:auto}.panel.active{display:grid;gap:.8rem}.panel h2{margin:.2rem 0}.chat-shell{display:flex;flex-direction:column;min-width:0;background-color:var(--chat);background-image:radial-gradient(#ffffff08 1px,transparent 1px);background-size:18px 18px}.chat-head .title{flex:1}.chat-head .title strong,.chat-head .title span{display:block}.chat-head .title span{font-size:.78rem;color:var(--muted)}.messages{flex:1;overflow-y:auto;padding:1.2rem max(4%,1rem);display:flex;flex-direction:column;gap:.25rem}.bubble{position:relative;max-width:min(68%,620px);padding:.45rem .55rem .35rem;background:var(--other);border-radius:.55rem;box-shadow:0 1px 1px #0005;overflow-wrap:anywhere;align-self:flex-start}.bubble.own{align-self:flex-end;background:var(--bubble)}.sender{font-size:.75rem;color:#53bdeb;font-weight:700}.reply-quote{border-left:4px solid var(--green);background:#0003;padding:.4rem .55rem;margin-bottom:.35rem;border-radius:.3rem;font-size:.82rem;color:#cbd5d9}.reply-quote strong{display:block;color:#7ae3ca}.bubble-text{white-space:pre-wrap}.time{font-size:.68rem;color:#b8c1c6;text-align:right;margin-left:1rem}.media-thumb{display:block;max-width:100%;max-height:360px;border-radius:.45rem;cursor:pointer;margin-bottom:.35rem;background:#000}.file-card{display:flex;gap:.6rem;align-items:center;background:#0003;border-radius:.45rem;padding:.7rem;text-decoration:none;color:#e9edef;margin-bottom:.35rem}.file-icon{font-size:1.6rem}.composer-wrap{background:var(--wa);padding:.55rem 1rem}.reply-bar,.attachment-bar{display:none;align-items:center;gap:.6rem;background:#182229;border-left:4px solid var(--green);padding:.55rem .8rem;margin-bottom:.4rem;border-radius:.35rem}.reply-bar.visible,.attachment-bar.visible{display:flex}.bar-text{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.composer{display:flex;align-items:flex-end;gap:.55rem}.composer textarea{min-height:42px;max-height:130px;resize:none;border:0;border-radius:1.3rem;padding:.7rem 1rem}.icon-btn{border-radius:50%;width:44px;height:44px;padding:0;font-size:1.2rem;flex:none}.send{background:var(--green);color:#062b25}.view,.gpt-view,.utility-view{display:none;height:100%}.view.active{display:contents}.gpt-view.active,.utility-view.active{display:block;overflow:auto;padding:2rem;background:#0b141a}.card{max-width:900px;margin:0 auto 1rem;background:#111b21;border:1px solid var(--line);border-radius:.8rem;padding:1rem}.stack{display:grid;gap:.75rem}.row{display:flex;gap:.65rem;align-items:end}.row>*{flex:1}.utility-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.output{min-height:8rem;max-height:50vh;overflow:auto;background:#0b141a;border:1px solid var(--line);padding:.8rem;border-radius:.55rem;white-space:pre-wrap}.context{position:fixed;z-index:80;display:none;min-width:170px;background:#233138;border:1px solid #41525d;border-radius:.45rem;box-shadow:0 8px 28px #000a;overflow:hidden}.context button{width:100%;border-radius:0;text-align:left;background:transparent}.context button:hover{background:#33434b}.lightbox{position:fixed;inset:0;z-index:90;background:#000e;display:none;place-items:center}.lightbox.visible{display:grid}.lightbox img,.lightbox video{max-width:94vw;max-height:92vh}.lightbox-close,.lightbox-more{position:absolute;top:1rem;width:44px;height:44px;border-radius:50%;font-size:1.4rem}.lightbox-close{left:1rem}.lightbox-more{right:1rem}.lightbox-menu{position:absolute;right:1rem;top:4.5rem;display:none;background:#233138;border-radius:.45rem;overflow:hidden}.lightbox-menu.visible{display:grid}.login{position:fixed;inset:0;z-index:120;background:#0b141af5;display:grid;place-items:center;padding:1rem}.login.hidden{display:none}.login-card{width:min(420px,100%);background:#202c33;border-radius:1rem;padding:2rem;box-shadow:0 25px 90px #000}.login-error{color:#ff8a94;min-height:1.2rem}.toast{position:fixed;z-index:130;right:1rem;bottom:1rem;background:#005c4b;padding:.8rem 1rem;border-radius:.5rem;display:none}.toast.error{background:#9f2631}@media(max-width:780px){.app{grid-template-columns:1fr}.sidebar{position:absolute;z-index:20;width:100%;height:auto}.sidebar .panel{display:none}.chat-shell{padding-top:120px}.bubble{max-width:86%}.utility-grid{grid-template-columns:1fr}.row{flex-direction:column;align-items:stretch}}
+</style>
 </head>
 <body>
-<div id="login-overlay" class="login-overlay">
-    <form id="login-form" class="login-card stack">
-        <div><div class="brand">Webchat Anmeldung</div><p class="muted">Melde dich mit einer registrierten Gateway Client-ID und dem Client-Secret an.</p></div>
-        <label>Client-ID<input id="client-id" autocomplete="username" required></label>
-        <label>Client-Secret<input id="client-secret" type="password" autocomplete="current-password" required></label>
-        <p id="login-error" class="login-error"></p>
-        <button type="submit">Anmelden</button>
-    </form>
-</div>
-<div class="shell">
-    <aside>
-        <div class="brand">Musik Webchat</div>
-        <div id="identity" class="muted">Nicht angemeldet</div>
-        <nav>
-            <button class="active" data-view="direct">Direktchat</button>
-            <button data-view="groups">Gruppen</button>
-            <button data-view="media">Medien</button>
-            <button data-view="gpt">ChatGPT</button>
-            <button data-view="uploads">Uploads</button>
-            <button id="logout" class="danger">Abmelden</button>
-        </nav>
-    </aside>
-    <main>
-        <section id="direct" class="view active">
-            <h1>Direkt- und Selbstchat</h1>
-            <div class="grid">
-                <form id="direct-form" class="card stack">
-                    <h2>Nachricht senden</h2>
-                    <div class="row"><label>Sender<input id="direct-sender" required></label><label>Empfänger<input id="direct-recipient" required></label></div>
-                    <label>Typ<select id="direct-type"></select></label>
-                    <label>Inhalt<textarea id="direct-content" placeholder="Text oder Link"></textarea></label>
-                    <label>Datei-Upload-ID<input id="direct-file-id" placeholder="Aus Uploads übernehmen"></label>
-                    <label>Bild-Upload-ID<input id="direct-image-id" placeholder="Aus Uploads übernehmen"></label>
-                    <button>Nachricht senden</button>
-                    <button type="button" id="self-send" class="secondary">Als Selbstchat senden</button>
-                </form>
-                <div class="card">
-                    <div class="row"><h2>Chatverlauf</h2><button id="load-direct" class="secondary">Aktualisieren</button></div>
-                    <div id="direct-output" class="output">Noch kein Verlauf geladen.</div>
-                </div>
-            </div>
-        </section>
-        <section id="groups" class="view">
-            <h1>Gruppenchats</h1>
-            <div class="grid">
-                <div class="stack">
-                    <form id="group-create" class="card stack">
-                        <h2>Gruppe erstellen</h2>
-                        <label>Name<input id="group-name" required></label>
-                        <label>Ersteller<input id="group-creator" required></label>
-                        <label>Mitglieder<input id="group-members" placeholder="Alice,Bob"></label>
-                        <button>Erstellen</button>
-                    </form>
-                    <form id="group-member" class="card stack">
-                        <h2>Mitglied ändern</h2>
-                        <label>Gruppen-ID<input id="member-group-id" type="number" min="1" required></label>
-                        <label>Username<input id="member-name" required></label>
-                        <label>Aktion<select id="member-action"><option>add</option><option>remove</option></select></label>
-                        <button>Speichern</button>
-                    </form>
-                </div>
-                <form id="group-send" class="card stack">
-                    <h2>Gruppennachricht</h2>
-                    <label>Gruppen-ID<input id="send-group-id" type="number" min="1" required></label>
-                    <label>Sender<input id="group-sender" required></label>
-                    <label>Typ<select id="group-type"></select></label>
-                    <label>Inhalt<textarea id="group-content"></textarea></label>
-                    <label>Datei-Upload-ID<input id="group-file-id"></label>
-                    <label>Bild-Upload-ID<input id="group-image-id"></label>
-                    <button>Senden</button>
-                    <button type="button" id="load-group" class="secondary">Gruppenverlauf laden</button>
-                    <div id="group-output" class="output">Noch kein Verlauf geladen.</div>
-                </form>
-            </div>
-        </section>
-        <section id="media" class="view">
-            <h1>Chatmedien</h1>
-            <div class="grid">
-                <form id="direct-media" class="card stack"><h2>Direkt-/Selbstchat</h2><label>User 1<input id="media-user-one" required></label><label>User 2<input id="media-user-two" required></label><button>Abrufen</button></form>
-                <form id="group-media" class="card stack"><h2>Gruppe</h2><label>Gruppen-ID<input id="media-group-id" type="number" min="1" required></label><button>Abrufen</button></form>
-            </div>
-            <div id="media-output" class="output">Noch keine Medien geladen.</div>
-        </section>
-        <section id="gpt" class="view">
-            <h1>ChatGPT</h1>
-            <div class="card stack">
-                <div class="row"><label>Benutzername<input id="gpt-user" required></label><button id="load-gpt" class="secondary">Verlauf laden</button><button id="reset-gpt" class="danger">Erinnerung löschen</button></div>
-                <div id="gpt-output" class="output">ChatGPT merkt sich den Verlauf getrennt pro Benutzer.</div>
-                <form id="gpt-form" class="row"><label>Nachricht<textarea id="gpt-content" required></textarea></label><button>Senden</button></form>
-            </div>
-        </section>
-        <section id="uploads" class="view">
-            <h1>Dateien und Bilder hochladen</h1>
-            <div class="grid">
-                <form id="upload-image" class="card stack"><h2>Bild</h2><label>Datei<input id="image-file" type="file" accept="image/*" required></label><button>Bild hochladen</button><div id="image-result" class="upload-id"></div></form>
-                <form id="upload-file" class="card stack"><h2>Datei</h2><label>Datei<input id="generic-file" type="file" required></label><button>Datei hochladen</button><div id="file-result" class="upload-id"></div></form>
-            </div>
-        </section>
-    </main>
-</div>
-<div id="status" class="status"></div>
+<div id="login" class="login"><form id="login-form" class="login-card stack"><div class="avatar">MC</div><h1>Webchat anmelden</h1><p style="color:var(--muted)">Client-ID und Client-Secret werden gegen den Gateway-Token-Endpunkt geprüft.</p><label>Client-ID<input id="client-id" required autocomplete="username"></label><label>Client-Secret<input id="client-secret" type="password" required autocomplete="current-password"></label><div id="login-error" class="login-error"></div><button class="primary">Anmelden</button></form></div>
+<div class="app">
+<aside class="sidebar"><div class="side-head"><div class="avatar">MC</div><div class="identity"><strong id="identity">Nicht angemeldet</strong><span>Musik Client Webchat</span></div><button id="logout" title="Abmelden">↪</button></div>
+<nav class="nav"><button class="active" data-page="chat">Chats</button><button data-page="groups">Gruppen</button><button data-page="media">Medien</button><button data-page="gpt">GPT</button></nav>
+<section id="chat-settings" class="panel active"><h2>Chat öffnen</h2><label>Modus<select id="chat-mode"><option value="direct">Direktchat</option><option value="self">Selbstchat</option><option value="group">Gruppe</option></select></label><label>Eigener Name<input id="sender"></label><label id="peer-label">Empfänger<input id="peer"></label><label id="group-label" hidden>Gruppen-ID<input id="chat-group-id" type="number" min="1"></label><button id="open-chat" class="primary">Chat laden</button><p style="color:var(--muted);font-size:.82rem">Nachrichtentyp und Upload-Zuordnung werden automatisch bestimmt.</p></section>
+<section id="group-settings" class="panel"><h2>Gruppenverwaltung</h2><form id="group-create" class="stack"><label>Name<input id="group-name" required></label><label>Ersteller<input id="group-creator" required></label><label>Mitglieder, kommagetrennt<input id="group-members"></label><button class="primary">Gruppe erstellen</button></form><hr style="width:100%;border-color:var(--line)"><form id="group-member" class="stack"><label>Gruppen-ID<input id="member-group-id" type="number" min="1" required></label><label>Benutzer<input id="member-name" required></label><label>Aktion<select id="member-action"><option value="add">Hinzufügen</option><option value="remove">Entfernen</option></select></label><button>Mitgliedschaft speichern</button></form></section>
+<section id="media-settings" class="panel"><h2>Medien laden</h2><form id="direct-media" class="stack"><label>User 1<input id="media-user-one" required></label><label>User 2<input id="media-user-two" required></label><button>Direktchat-Medien</button></form><form id="group-media" class="stack"><label>Gruppen-ID<input id="media-group-id" type="number" min="1" required></label><button>Gruppenmedien</button></form></section>
+<section id="gpt-settings" class="panel"><h2>ChatGPT</h2><label>Benutzername<input id="gpt-user"></label><button id="load-gpt">Verlauf laden</button><button id="reset-gpt" class="danger">Erinnerung löschen</button></section></aside>
+<main class="chat-shell">
+<section id="chat-page" class="view active"><header class="chat-head"><div class="avatar" id="chat-avatar">?</div><div class="title"><strong id="chat-title">Wähle einen Chat</strong><span id="chat-subtitle">Direkt-, Selbst- oder Gruppenchat</span></div><button id="refresh-chat">↻</button></header><div id="messages" class="messages"><div style="margin:auto;color:var(--muted)">Öffne links einen Chat.</div></div><div class="composer-wrap"><div id="reply-bar" class="reply-bar"><div class="bar-text"><strong id="reply-sender"></strong><div id="reply-text"></div></div><button id="cancel-reply">×</button></div><div id="attachment-bar" class="attachment-bar"><span>📎</span><div id="attachment-name" class="bar-text"></div><button id="cancel-attachment">×</button></div><div class="composer"><button id="attach" class="icon-btn" title="Bild, Video oder Datei">＋</button><input id="attachment-input" type="file" hidden><textarea id="message-input" placeholder="Nachricht" rows="1"></textarea><button id="send-message" class="icon-btn send" title="Senden">➤</button></div></div></section>
+<section id="groups-page" class="utility-view"><div class="card"><h1>Gruppenverwaltung</h1><p>Erstelle links Gruppen oder ändere deren Mitglieder. Danach kannst du die Gruppen-ID im Chatmodus verwenden.</p></div></section>
+<section id="media-page" class="utility-view"><div class="card"><h1>Gesendete Medien</h1><div id="media-output" class="output">Wähle links einen Chat oder eine Gruppe.</div></div></section>
+<section id="gpt-page" class="gpt-view"><div class="card"><div class="row"><h1>ChatGPT</h1><button id="gpt-refresh">↻</button></div><div id="gpt-output" class="output">Lade links den Verlauf.</div><form id="gpt-form" class="row" style="margin-top:.8rem"><textarea id="gpt-input" placeholder="Nachricht an ChatGPT" required></textarea><button class="primary">Senden</button></form></div></section>
+</main></div>
+<div id="context" class="context"><button id="context-reply">↩ Antworten</button><button id="context-download">⬇ Herunterladen</button></div>
+<div id="lightbox" class="lightbox"><button id="lightbox-close" class="lightbox-close">×</button><button id="lightbox-more" class="lightbox-more">⋮</button><div id="lightbox-content"></div><div id="lightbox-menu" class="lightbox-menu"><button id="lightbox-reply">↩ Antworten</button><button id="lightbox-download">⬇ Herunterladen</button></div></div><div id="toast" class="toast"></div>
 <script>
-const types=['text','picture','text-mit-link','link','datei','text-mit-bild','text-mit-datei'];
-let accessToken=''; let currentUser='';
-const $=id=>document.getElementById(id);
-for(const id of ['direct-type','group-type']) $(id).innerHTML=types.map(type=>`<option value="${type}">${type}</option>`).join('');
-function showStatus(message,error=false){const box=$('status');box.textContent=message;box.className='status'+(error?' error':'');box.style.display='block';setTimeout(()=>box.style.display='none',4500)}
-function query(values){const params=new URLSearchParams();for(const [key,value] of Object.entries(values))if(value)params.set(key,value);return params.toString()}
-async function api(url,options={}){options.headers={...(options.headers||{}),Authorization:`Bearer ${accessToken}`};const response=await fetch(url,options);if(response.status===204)return null;const type=response.headers.get('content-type')||'';const data=type.includes('json')?await response.json():await response.text();if(!response.ok)throw new Error(typeof data==='string'?data:(data.message||data.error||`HTTP ${response.status}`));return data}
-function renderMessages(target,messages){target.innerHTML=messages.length?'':'Keine Nachrichten.';for(const message of messages){const div=document.createElement('div');div.className='message'+(message.sender===currentUser||message.role==='user'?' own':'')+(message.role==='assistant'?' assistant':'');const sender=message.sender||message.role;const content=message.inhalt??message.content??'';div.innerHTML=`<div class="meta"></div><div class="body"></div>`;div.querySelector('.meta').textContent=`${sender} · ${message.typ||''} · ${new Date((message.created_at||0)*1000).toLocaleString()}`;div.querySelector('.body').textContent=content;if(message.datei_upload||message.bild_upload){const a=document.createElement('a');a.href=`/chat/upload/${message.datei_upload||message.bild_upload}`;a.target='_blank';a.textContent=' Anhang herunterladen';div.append(a)}target.append(div)}}
-function messageParams(prefix){return query({'inhalt':$(`${prefix}-content`).value,'datei-upload':$(`${prefix}-file-id`).value,'bild-upload':$(`${prefix}-image-id`).value})}
-document.querySelectorAll('nav [data-view]').forEach(button=>button.onclick=()=>{document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.querySelectorAll('nav button').forEach(v=>v.classList.remove('active'));$(button.dataset.view).classList.add('active');button.classList.add('active')});
-$('login-form').onsubmit=async event=>{event.preventDefault();$('login-error').textContent='';const id=$('client-id').value.trim(),secret=$('client-secret').value;try{const response=await fetch('/token',{method:'POST',headers:{Authorization:`Basic ${btoa(`${id}:${secret}`)}`,'Content-Type':'application/x-www-form-urlencoded'},body:'grant_type=client_credentials'});const data=await response.json();if(!response.ok)throw new Error(data.message||data.error||'Anmeldung fehlgeschlagen');accessToken=data.access_token;currentUser=id;$('identity').textContent=`Angemeldet: ${id}`;for(const field of ['direct-sender','direct-recipient','group-creator','group-sender','media-user-one','media-user-two','gpt-user'])if(!$(field).value)$(field).value=id;$('login-overlay').classList.add('hidden');showStatus('Erfolgreich angemeldet')}catch(error){$('login-error').textContent=error.message}};
-$('logout').onclick=()=>{accessToken='';currentUser='';$('client-secret').value='';$('login-overlay').classList.remove('hidden')};
-$('direct-form').onsubmit=async event=>{event.preventDefault();try{await api(`/chat/${encodeURIComponent($('direct-sender').value)}/${encodeURIComponent($('direct-recipient').value)}/${$('direct-type').value}?${messageParams('direct')}`,{method:'POST'});showStatus('Nachricht gespeichert');$('load-direct').click()}catch(error){showStatus(error.message,true)}};
-$('self-send').onclick=async()=>{try{await api(`/chat/self/${encodeURIComponent($('direct-sender').value)}/${$('direct-type').value}?${messageParams('direct')}`,{method:'POST'});showStatus('Selbstchat-Nachricht gespeichert')}catch(error){showStatus(error.message,true)}};
-$('load-direct').onclick=async()=>{try{const data=await api(`/chat/history/${encodeURIComponent($('direct-sender').value)}/${encodeURIComponent($('direct-recipient').value)}?limit=100&offset=0`);renderMessages($('direct-output'),data.nachrichten)}catch(error){showStatus(error.message,true)}};
-$('group-create').onsubmit=async event=>{event.preventDefault();try{const data=await api(`/chat/group/create?${query({name:$('group-name').value,ersteller:$('group-creator').value,mitglieder:$('group-members').value})}`,{method:'POST'});$('send-group-id').value=data.gruppen_id;$('member-group-id').value=data.gruppen_id;$('media-group-id').value=data.gruppen_id;showStatus(`Gruppe ${data.gruppen_id} erstellt`)}catch(error){showStatus(error.message,true)}};
-$('group-member').onsubmit=async event=>{event.preventDefault();try{await api(`/chat/group/${$('member-group-id').value}/members?${query({action:$('member-action').value,username:$('member-name').value})}`,{method:'POST'});showStatus('Mitgliedschaft gespeichert')}catch(error){showStatus(error.message,true)}};
-$('group-send').onsubmit=async event=>{event.preventDefault();try{await api(`/chat/group/${$('send-group-id').value}/${encodeURIComponent($('group-sender').value)}/${$('group-type').value}?${messageParams('group')}`,{method:'POST'});showStatus('Gruppennachricht gespeichert');$('load-group').click()}catch(error){showStatus(error.message,true)}};
-$('load-group').onclick=async()=>{try{const data=await api(`/chat/group/${$('send-group-id').value}/history?limit=100&offset=0`);renderMessages($('group-output'),data.nachrichten)}catch(error){showStatus(error.message,true)}};
-function renderMedia(items){$('media-output').innerHTML=items.length?'':'Keine Medien.';for(const item of items){const div=document.createElement('div');div.className='message';const link=document.createElement('a');link.href=item.download_url;link.target='_blank';link.textContent=`${item.kind}: ${item.original_name} (${item.size} Bytes)`;div.append(link);$('media-output').append(div)}}
-$('direct-media').onsubmit=async event=>{event.preventDefault();try{renderMedia((await api(`/chat/media/${encodeURIComponent($('media-user-one').value)}/${encodeURIComponent($('media-user-two').value)}`)).medien)}catch(error){showStatus(error.message,true)}};
-$('group-media').onsubmit=async event=>{event.preventDefault();try{renderMedia((await api(`/chat/group/${$('media-group-id').value}/media`)).medien)}catch(error){showStatus(error.message,true)}};
-async function upload(kind,input,result){const data=new FormData();data.append('upload',input.files[0]);data.append('sender',currentUser);const response=await api(`/chat/upload/${kind}`,{method:'POST',body:data});result.textContent=`Upload-Response-ID: ${response.upload_response_id}`;if(kind==='bild'){$('direct-image-id').value=response.upload_response_id;$('group-image-id').value=response.upload_response_id}else{$('direct-file-id').value=response.upload_response_id;$('group-file-id').value=response.upload_response_id}showStatus('Upload erfolgreich')}
-$('upload-image').onsubmit=async event=>{event.preventDefault();try{await upload('bild',$('image-file'),$('image-result'))}catch(error){showStatus(error.message,true)}};
-$('upload-file').onsubmit=async event=>{event.preventDefault();try{await upload('datei',$('generic-file'),$('file-result'))}catch(error){showStatus(error.message,true)}};
-$('gpt-form').onsubmit=async event=>{event.preventDefault();try{const data=await api(`/chat/gpt/${encodeURIComponent($('gpt-user').value)}?${query({inhalt:$('gpt-content').value})}`,{method:'POST'});$('gpt-content').value='';showStatus(`Antwort von ${data.model}`);$('load-gpt').click()}catch(error){showStatus(error.message,true)}};
-$('load-gpt').onclick=async()=>{try{const data=await api(`/chat/gpt/${encodeURIComponent($('gpt-user').value)}/history?limit=1000&offset=0`);renderMessages($('gpt-output'),data.nachrichten)}catch(error){showStatus(error.message,true)}};
-$('reset-gpt').onclick=async()=>{if(!confirm('Gesamten ChatGPT-Verlauf dieses Benutzers löschen?'))return;try{await api(`/chat/gpt/${encodeURIComponent($('gpt-user').value)}/history`,{method:'DELETE'});$('gpt-output').textContent='Verlauf gelöscht.';showStatus('ChatGPT-Erinnerung gelöscht')}catch(error){showStatus(error.message,true)}};
-</script>
-</body>
-</html>
+const $=id=>document.getElementById(id);let token='',me='',activeChat=null,replyTo=null,pendingFile=null,contextMessage=null,lightboxMessage=null;
+const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+function toast(text,error=false){const el=$('toast');el.textContent=text;el.className='toast'+(error?' error':'');el.style.display='block';setTimeout(()=>el.style.display='none',3500)}
+function qs(values){const p=new URLSearchParams();Object.entries(values).forEach(([k,v])=>{if(v!==null&&v!==undefined&&v!=='')p.set(k,v)});return p.toString()}
+async function api(url,options={}){options.headers={...(options.headers||{}),Authorization:`Bearer ${token}`};const response=await fetch(url,options);if(response.status===204)return null;const json=(response.headers.get('content-type')||'').includes('json');const data=json?await response.json():await response.text();if(!response.ok)throw new Error(typeof data==='string'?data:data.message||data.error||`HTTP ${response.status}`);return data}
+$('login-form').onsubmit=async e=>{e.preventDefault();$('login-error').textContent='';const id=$('client-id').value.trim();try{const r=await fetch('/token',{method:'POST',headers:{Authorization:`Basic ${btoa(`${id}:${$('client-secret').value}`)}`,'Content-Type':'application/x-www-form-urlencoded'},body:'grant_type=client_credentials'});const d=await r.json();if(!r.ok)throw new Error(d.message||d.error);token=d.access_token;me=id;$('identity').textContent=id;['sender','group-creator','media-user-one','media-user-two','gpt-user'].forEach(x=>$(x).value=id);$('login').classList.add('hidden');toast('Angemeldet')}catch(err){$('login-error').textContent=err.message}};$('logout').onclick=()=>{token='';$('client-secret').value='';$('login').classList.remove('hidden')};
+document.querySelectorAll('[data-page]').forEach(button=>button.onclick=()=>{document.querySelectorAll('[data-page]').forEach(x=>x.classList.toggle('active',x===button));document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.view,.utility-view,.gpt-view').forEach(x=>x.classList.remove('active'));$(`${button.dataset.page}-settings`).classList.add('active');$(`${button.dataset.page}-page`).classList.add('active')});
+$('chat-mode').onchange=()=>{const group=$('chat-mode').value==='group';$('group-label').hidden=!group;$('peer-label').hidden=group||$('chat-mode').value==='self'};
+$('open-chat').onclick=()=>{const mode=$('chat-mode').value,sender=$('sender').value.trim();if(!sender)return toast('Eigener Name fehlt',true);activeChat={mode,sender,peer:mode==='self'?sender:$('peer').value.trim(),groupId:$('chat-group-id').value};if(mode==='group'&&!activeChat.groupId)return toast('Gruppen-ID fehlt',true);if(mode==='direct'&&!activeChat.peer)return toast('Empfänger fehlt',true);$('chat-title').textContent=mode==='group'?`Gruppe ${activeChat.groupId}`:activeChat.peer;$('chat-avatar').textContent=(mode==='group'?'G':activeChat.peer[0]||'?').toUpperCase();$('chat-subtitle').textContent=mode==='self'?'Nachrichten an dich selbst':mode==='group'?'Gruppenchat':'Direktchat';loadChat()};
+function mediaInfo(m){if(m.bild_upload)return{id:m.bild_upload,name:m.bild_name||'Bild',mime:m.bild_mime_type||'image/*'};if(m.datei_upload)return{id:m.datei_upload,name:m.datei_name||'Datei',mime:m.datei_mime_type||'application/octet-stream'};return null}
+function setReply(m){replyTo=m;$('reply-sender').textContent=m.sender;$('reply-text').textContent=m.inhalt||mediaInfo(m)?.name||'Mediennachricht';$('reply-bar').classList.add('visible');$('message-input').focus()}function clearReply(){replyTo=null;$('reply-bar').classList.remove('visible')}$('cancel-reply').onclick=clearReply;
+function openContext(e,m){e.preventDefault();contextMessage=m;const media=mediaInfo(m);$('context-download').style.display=media?'block':'none';const menu=$('context');menu.style.display='block';menu.style.left=`${Math.min(e.clientX,innerWidth-180)}px`;menu.style.top=`${Math.min(e.clientY,innerHeight-100)}px`}document.addEventListener('click',e=>{if(!e.target.closest('#context'))$('context').style.display='none'});$('context-reply').onclick=()=>setReply(contextMessage);$('context-download').onclick=()=>downloadMedia(mediaInfo(contextMessage));
+function downloadMedia(media){if(!media)return;const a=document.createElement('a');a.href=`/chat/upload/${media.id}`;a.download=media.name;document.body.append(a);a.click();a.remove()}
+function openLightbox(m,element){lightboxMessage=m;const media=mediaInfo(m);$('lightbox-content').innerHTML='';const clone=element.cloneNode(true);clone.removeAttribute('controls');if(clone.tagName==='VIDEO')clone.controls=true;clone.className='';$('lightbox-content').append(clone);$('lightbox').classList.add('visible')}$('lightbox-close').onclick=()=>$('lightbox').classList.remove('visible');$('lightbox-more').onclick=()=>$('lightbox-menu').classList.toggle('visible');$('lightbox-reply').onclick=()=>{setReply(lightboxMessage);$('lightbox').classList.remove('visible')};$('lightbox-download').onclick=()=>downloadMedia(mediaInfo(lightboxMessage));
+function renderMessages(messages,target=$('messages')){target.innerHTML='';if(!messages.length){target.innerHTML='<div style="margin:auto;color:var(--muted)">Noch keine Nachrichten.</div>';return}messages.forEach(m=>{const bubble=document.createElement('article');bubble.className='bubble'+(m.sender===me?' own':'');bubble.dataset.id=m.id;let html=m.sender===me?'':`<div class="sender">${esc(m.sender)}</div>`;if(m.antwort_auf)html+=`<div class="reply-quote"><strong>${esc(m.antwort_sender||'Nachricht')}</strong>${esc(m.antwort_inhalt||'Mediennachricht')}</div>`;const media=mediaInfo(m);if(media){const url=`/chat/upload/${encodeURIComponent(media.id)}?inline=1`;if(media.mime.startsWith('image/'))html+=`<img class="media-thumb" src="${url}" alt="${esc(media.name)}">`;else if(media.mime.startsWith('video/'))html+=`<video class="media-thumb" src="${url}" controls preload="metadata"></video>`;else html+=`<a class="file-card" href="/chat/upload/${encodeURIComponent(media.id)}"><span class="file-icon">📄</span><span>${esc(media.name)}</span></a>`}if(m.inhalt)html+=`<div class="bubble-text">${esc(m.inhalt)}</div>`;html+=`<div class="time">${new Date(m.created_at*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div>`;bubble.innerHTML=html;bubble.oncontextmenu=e=>openContext(e,m);const visual=bubble.querySelector('img,video');if(visual)visual.onclick=()=>openLightbox(m,visual);target.append(bubble)});target.scrollTop=target.scrollHeight}
+async function loadChat(){if(!activeChat)return;try{const url=activeChat.mode==='group'?`/chat/group/${activeChat.groupId}/history?limit=1000`:`/chat/history/${encodeURIComponent(activeChat.sender)}/${encodeURIComponent(activeChat.peer)}?limit=1000`;renderMessages((await api(url)).nachrichten)}catch(err){toast(err.message,true)}}$('refresh-chat').onclick=loadChat;
+$('attach').onclick=()=>$('attachment-input').click();$('attachment-input').onchange=()=>{pendingFile=$('attachment-input').files[0]||null;if(pendingFile){$('attachment-name').textContent=`${pendingFile.type.startsWith('image/')?'🖼️':pendingFile.type.startsWith('video/')?'🎬':'📄'} ${pendingFile.name}`;$('attachment-bar').classList.add('visible')}};$('cancel-attachment').onclick=()=>{pendingFile=null;$('attachment-input').value='';$('attachment-bar').classList.remove('visible')};
+function autoType(text,file){if(file){const image=file.type.startsWith('image/');return image?(text?'text-mit-bild':'picture'):(text?'text-mit-datei':'datei')}const url=/https?:\/\/\S+/;return url.test(text)?(text.trim().match(/^https?:\/\/\S+$/)?'link':'text-mit-link'):'text'}
+async function uploadPending(){if(!pendingFile)return{};const image=pendingFile.type.startsWith('image/'),data=new FormData();data.append('upload',pendingFile);data.append('sender',activeChat.sender);const result=await api(`/chat/upload/${image?'bild':'datei'}`,{method:'POST',body:data});return image?{'bild-upload':result.upload_response_id}:{'datei-upload':result.upload_response_id}}
+$('send-message').onclick=async()=>{if(!activeChat)return toast('Öffne zuerst einen Chat',true);const text=$('message-input').value.trim();if(!text&&!pendingFile)return;const file=pendingFile,type=autoType(text,file);$('send-message').disabled=true;try{const attachment=await uploadPending();const params=qs({inhalt:text,...attachment,'antwort-auf':replyTo?.id});const url=activeChat.mode==='group'?`/chat/group/${activeChat.groupId}/${encodeURIComponent(activeChat.sender)}/${type}?${params}`:activeChat.mode==='self'?`/chat/self/${encodeURIComponent(activeChat.sender)}/${type}?${params}`:`/chat/${encodeURIComponent(activeChat.sender)}/${encodeURIComponent(activeChat.peer)}/${type}?${params}`;await api(url,{method:'POST'});$('message-input').value='';$('cancel-attachment').click();clearReply();await loadChat()}catch(err){toast(err.message,true)}finally{$('send-message').disabled=false}};$('message-input').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('send-message').click()}};
+$('group-create').onsubmit=async e=>{e.preventDefault();try{const d=await api(`/chat/group/create?${qs({name:$('group-name').value,ersteller:$('group-creator').value,mitglieder:$('group-members').value})}`,{method:'POST'});$('chat-group-id').value=$('member-group-id').value=$('media-group-id').value=d.gruppen_id;toast(`Gruppe ${d.gruppen_id} erstellt`)}catch(err){toast(err.message,true)}};$('group-member').onsubmit=async e=>{e.preventDefault();try{await api(`/chat/group/${$('member-group-id').value}/members?${qs({action:$('member-action').value,username:$('member-name').value})}`,{method:'POST'});toast('Mitgliedschaft gespeichert')}catch(err){toast(err.message,true)}};
+function renderMedia(items){$('media-output').innerHTML=items.length?'':'Keine Medien.';items.forEach(item=>{const row=document.createElement('div');row.className='file-card';row.innerHTML=`<span>${item.kind==='bild'?'🖼️':'📎'}</span><span>${esc(item.original_name)}<br><small>${item.size} Bytes</small></span>`;row.onclick=()=>downloadMedia({id:item.response_id,name:item.original_name,mime:item.mime_type});$('media-output').append(row)})}$('direct-media').onsubmit=async e=>{e.preventDefault();try{renderMedia((await api(`/chat/media/${encodeURIComponent($('media-user-one').value)}/${encodeURIComponent($('media-user-two').value)}`)).medien)}catch(err){toast(err.message,true)}};$('group-media').onsubmit=async e=>{e.preventDefault();try{renderMedia((await api(`/chat/group/${$('media-group-id').value}/media`)).medien)}catch(err){toast(err.message,true)}};
+function renderGpt(items){$('gpt-output').innerHTML='';items.forEach(m=>{const div=document.createElement('div');div.className='bubble '+(m.role==='user'?'own':'');div.textContent=m.content;$('gpt-output').append(div)});$('gpt-output').scrollTop=$('gpt-output').scrollHeight}async function loadGpt(){try{renderGpt((await api(`/chat/gpt/${encodeURIComponent($('gpt-user').value)}/history?limit=1000`)).nachrichten)}catch(err){toast(err.message,true)}}$('load-gpt').onclick=$('gpt-refresh').onclick=loadGpt;$('gpt-form').onsubmit=async e=>{e.preventDefault();try{await api(`/chat/gpt/${encodeURIComponent($('gpt-user').value)}?${qs({inhalt:$('gpt-input').value})}`,{method:'POST'});$('gpt-input').value='';loadGpt()}catch(err){toast(err.message,true)}};$('reset-gpt').onclick=async()=>{if(confirm('Erinnerung löschen?')){await api(`/chat/gpt/${encodeURIComponent($('gpt-user').value)}/history`,{method:'DELETE'});loadGpt()}};
+</script></body></html>

@@ -2422,6 +2422,8 @@ PARAMETER_DETAILS = {
     'action': ('Auszuführende Änderung an der Gruppenmitgliedschaft.', 'add oder remove'),
     'limit': ('Maximale Anzahl zurückgegebener Chatnachrichten.', 'Ganzzahl zwischen 1 und 1000; Standard 100'),
     'offset': ('Anzahl der zu überspringenden Chatnachrichten.', 'Ganzzahl ab 0; Standard 0'),
+    'antwort-auf': ('Nachrichten-ID, auf die geantwortet wird.', 'Positive Ganzzahl aus demselben Chat'),
+    'inline': ('Steuert die Browserdarstellung eines Chat-Anhangs.', '1 für Inline-Anzeige; sonst Download'),
 }
 
 ROUTE_PARAMETER_OVERRIDES = {
@@ -2442,15 +2444,18 @@ ROUTE_PARAMETER_OVERRIDES = {
     'play_playlist': [('query', 'id', False)],
     'list_server_playlists': [('query', 'num', True), ('query', 'last-num', False)],
     'chat.upload_chat_media': [('file', 'upload', True), ('form', 'sender', False)],
+    'chat.download_chat_media': [('query', 'inline', False)],
     'chat.send_direct_message': [
         ('query', 'inhalt', False),
         ('query', 'datei-upload', False),
         ('query', 'bild-upload', False),
+        ('query', 'antwort-auf', False),
     ],
     'chat.send_self_message': [
         ('query', 'inhalt', False),
         ('query', 'datei-upload', False),
         ('query', 'bild-upload', False),
+        ('query', 'antwort-auf', False),
     ],
     'chat.create_group': [
         ('query', 'name', True),
@@ -2462,6 +2467,7 @@ ROUTE_PARAMETER_OVERRIDES = {
         ('query', 'inhalt', False),
         ('query', 'datei-upload', False),
         ('query', 'bild-upload', False),
+        ('query', 'antwort-auf', False),
     ],
     'chat.direct_history': [('query', 'limit', False), ('query', 'offset', False)],
     'chat.group_history': [('query', 'limit', False), ('query', 'offset', False)],
