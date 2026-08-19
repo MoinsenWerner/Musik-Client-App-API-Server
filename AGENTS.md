@@ -19,13 +19,14 @@ This repository contains a single-process Flask application named **Musik-Client
 11. a self-documenting route browser; and
 12. automatic SQLite backups after successful SQLAlchemy commits, with an optional Git push.
 
-Almost all Python behavior is in `servus.py`. There is no package split, migration framework, test suite, dependency manifest, container definition, or production WSGI configuration checked in. The development entry point listens on `0.0.0.0:2050` with Flask debug mode enabled.
+Most Python behavior is in `servus.py`; the independently runnable chat subsystem is in `chat.py`. There is no migration framework, test suite, dependency manifest, container definition, or production WSGI configuration checked in. Both development entry points listen on `0.0.0.0:2050` with Flask debug mode enabled; only one can bind that port at a time.
 
 ## 2. Repository inventory
 
 ### Source and documentation
 
 - `servus.py`: the complete Flask app, configuration constants, SQLAlchemy models, startup schema alterations, backup hooks, request/response logging, OAuth implementation, Spotify/local-backend proxy, all API routes, and an inline dashboard template.
+- `chat.py`: independent chat blueprint, chat-specific SQLite schema, attachment storage, direct/self/group messaging, history, and media routes. `servus.py` imports and registers it automatically; `python3 chat.py` runs it alone on the same host/port.
 - `README.md`: currently only the repository title; this `AGENTS.md` is the authoritative engineering guide.
 - `AGENTS.md`: this file. Update it whenever externally visible behavior or repository structure changes.
 - `.gitignore`: ignores `/db_bak/`, which contains sensitive generated database backups and the backup repository clone.
@@ -53,8 +54,10 @@ Almost all Python behavior is in `servus.py`. There is no package split, migrati
 - `apk/latest/`: the current APK, named `<version>.apk`.
 - `apk/versions/<version>/`: archived APK versions.
 - `uploads/core-data-abfragen.txt`: append-only validated Core-Data submissions.
+- `chat.db`: separate SQLite database containing chat messages, groups, memberships, and attachment metadata.
+- `chat_uploads/`: uploaded chat files and images; opaque response IDs form the stored filenames.
 
-Do not commit runtime databases, logs, uploaded APKs, credentials, or backup clones. Note that only `db_bak/` is presently ignored, so inspect `git status` carefully.
+Do not commit runtime databases, logs, uploaded APKs, credentials, or backup clones. The main databases, chat uploads, logs, backups, and Python bytecode are ignored, but still inspect `git status` carefully for other generated files.
 
 ## 3. Runtime dependencies and operation
 
@@ -82,7 +85,8 @@ For code changes, run at least:
 
 ```bash
 python3 -m py_compile servus.py
-python3 -m ruff check servus.py
+python3 -m py_compile chat.py
+python3 -m ruff check servus.py chat.py
 git diff --check
 ```
 
@@ -122,6 +126,8 @@ SQLAlchemy uses one SQLite database. Current tables/models are:
 - `playlist_contents`: playlist metadata and JSON-encoded parallel arrays for song names, IDs, and images; includes creator and timestamps.
 - `playing_playlist`: singleton-like row (`id=1`) pointing at the last playlist successfully started through this API.
 - `user_positions`: dynamically declared coordinate/time/date/map-link columns based on constants.
+
+The separate `chat.db`, managed directly with `sqlite3` by `chat.py`, contains `chat_uploads`, `chat_groups`, `chat_group_members`, and `chat_messages`. Attachment bytes live in `chat_uploads/`; their metadata and associations live in `chat.db`. Foreign keys connect messages to group and upload rows. Direct messages store a recipient, while group messages store a group ID.
 
 Startup calls `db.create_all()` and performs manual `ALTER TABLE` compatibility additions for `client_credentials.token_lifetime_seconds` and `playlist_contents.creator`. There is no Alembic migration history.
 
@@ -248,6 +254,22 @@ All functional player/queue routes below require the gateway Bearer token becaus
 ### Route discovery
 
 - **GET `/routes`** — Dynamically enumerates Flask's URL map, so future routes appear automatically. Default representation depends on the `Accept` header: browsers receive `templates/routes.html`; other clients receive semicolon-separated route paths. Query `format=html` or `format=text` overrides negotiation. Python AST inspection discovers path/query/form/file parameters and augments known routes with manual metadata. The HTML UI offers live search, filters, parameter explanations, and collapsible fixed-route groupings.
+
+### Chat subsystem
+
+The chat API is registered automatically in the main app and is also independently runnable with `python3 chat.py`. It uses `chat.db`, not `oauth2_gateway.db`. Chat routes currently have no bearer-token authentication, so deployment-level access control is important.
+
+- **POST `/chat/upload/<kind>`** — Uploads multipart field `upload` before sending a message. `kind` is `bild` or `datei`; optional form field `sender` records who uploaded it. Images are restricted to AVIF, GIF, JPEG/JPG, PNG, or WebP. The file is streamed to `chat_uploads/`, metadata is stored in `chat.db`, and HTTP 201 JSON returns `upload_response_id`.
+- **GET `/chat/upload/<response_id>`** — Downloads an uploaded attachment using its opaque upload response ID and original filename.
+- **POST `/chat/<sender>/<recipient>/<message_type>`** — Sends a direct message; sender and recipient may be identical for a self-chat. Valid types are `picture`, `text`, `text-mit-link`, `link`, `datei`, `text-mit-bild`, and `text-mit-datei`. Query `inhalt` is required for text/link types, `datei-upload` is required for file types, and `bild-upload` is required for image types. Attachment values must be response IDs returned by the matching upload route. Returns HTTP 201 JSON with `message_id`.
+- **POST `/chat/self/<username>/<message_type>`** — Explicit convenience route for a self-chat; uses the same type-dependent query parameters and stores username as both sender and recipient.
+- **POST `/chat/group/create`** — Creates a group. Required query parameters: `name` and `ersteller`; optional `mitglieder` is a comma-separated list. The creator is always included. Returns `gruppen_id` and members.
+- **POST `/chat/group/<int:group_id>/members`** — Changes membership using required query `action=add|remove` and `username`. Returns 404 for a missing group.
+- **POST `/chat/group/<int:group_id>/<sender>/<message_type>`** — Sends a group message with the same type-dependent message queries. The sender must already be a group member, otherwise HTTP 403 is returned.
+- **GET `/chat/history/<user_one>/<user_two>`** — Returns chronological direct-chat history in JSON, including attachment response IDs. Optional `limit` is 1–1000 (default 100), and `offset` is at least 0. Supplying the same user twice retrieves the self-chat.
+- **GET `/chat/group/<int:group_id>/history`** — Returns chronological group history with the same optional pagination.
+- **GET `/chat/media/<user_one>/<user_two>`** — Returns all distinct files/images assigned to the direct/self chat, oldest first, with metadata and download URLs.
+- **GET `/chat/group/<int:group_id>/media`** — Returns all distinct attachments assigned to the group chat.
 
 ## 8. Response conventions and notable quirks
 

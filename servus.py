@@ -22,12 +22,14 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import glob
 from packaging.version import parse as parse_version
 from werkzeug.utils import safe_join, secure_filename
+from chat import register_chat_routes
 
 UPDATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "updates")
 os.makedirs(UPDATES_DIR, exist_ok=True)
 
 
 app = Flask(__name__)
+register_chat_routes(app)
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DATABASE_FILE = os.path.join(BASE_DIR, 'oauth2_gateway.db')
 DB_BACKUP_FOLDER = os.path.join(BASE_DIR, 'db_bak')
@@ -2408,6 +2410,18 @@ PARAMETER_DETAILS = {
     'ersteller': ('Name des Erstellers der Playlist.', 'Freier URL-kodierter Text; Standardwert Admin'),
     'num': ('Anzahl der auszugebenden Playlists oder Auswahl aller Playlists.', 'all oder positive Ganzzahl'),
     'last-num': ('Anzahl der bereits vom Client empfangenen Playlists.', 'Ganzzahl ab 0; bei num=all nicht erforderlich'),
+    'kind': ('Art des Chat-Uploads.', 'bild oder datei'),
+    'upload': ('Datei oder Bild für eine spätere Chatnachricht.', 'Multipart-Datei'),
+    'sender': ('Absender einer Chatnachricht.', 'Benutzername als URL-Pfadsegment'),
+    'recipient': ('Empfänger einer direkten Chatnachricht.', 'Benutzername als URL-Pfadsegment'),
+    'message_type': ('Typ des Nachrichteninhalts.', 'picture, text, text-mit-link, link, datei, text-mit-bild oder text-mit-datei'),
+    'inhalt': ('Text- oder Linkinhalt der Chatnachricht.', 'URL-kodierter Freitext'),
+    'datei-upload': ('Zuordnung einer zuvor hochgeladenen Datei.', 'upload-response-id von /chat/upload/datei'),
+    'bild-upload': ('Zuordnung eines zuvor hochgeladenen Bildes.', 'upload-response-id von /chat/upload/bild'),
+    'mitglieder': ('Anfängliche Mitglieder eines Gruppenchats.', 'Durch Kommas getrennte Benutzernamen'),
+    'action': ('Auszuführende Änderung an der Gruppenmitgliedschaft.', 'add oder remove'),
+    'limit': ('Maximale Anzahl zurückgegebener Chatnachrichten.', 'Ganzzahl zwischen 1 und 1000; Standard 100'),
+    'offset': ('Anzahl der zu überspringenden Chatnachrichten.', 'Ganzzahl ab 0; Standard 0'),
 }
 
 ROUTE_PARAMETER_OVERRIDES = {
@@ -2427,6 +2441,30 @@ ROUTE_PARAMETER_OVERRIDES = {
     'get_playlist_content': [('query', 'id', False)],
     'play_playlist': [('query', 'id', False)],
     'list_server_playlists': [('query', 'num', True), ('query', 'last-num', False)],
+    'chat.upload_chat_media': [('file', 'upload', True), ('form', 'sender', False)],
+    'chat.send_direct_message': [
+        ('query', 'inhalt', False),
+        ('query', 'datei-upload', False),
+        ('query', 'bild-upload', False),
+    ],
+    'chat.send_self_message': [
+        ('query', 'inhalt', False),
+        ('query', 'datei-upload', False),
+        ('query', 'bild-upload', False),
+    ],
+    'chat.create_group': [
+        ('query', 'name', True),
+        ('query', 'ersteller', True),
+        ('query', 'mitglieder', False),
+    ],
+    'chat.change_group_members': [('query', 'action', True), ('query', 'username', True)],
+    'chat.send_group_message': [
+        ('query', 'inhalt', False),
+        ('query', 'datei-upload', False),
+        ('query', 'bild-upload', False),
+    ],
+    'chat.direct_history': [('query', 'limit', False), ('query', 'offset', False)],
+    'chat.group_history': [('query', 'limit', False), ('query', 'offset', False)],
 }
 
 
