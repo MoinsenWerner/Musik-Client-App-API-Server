@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 
 import requests
-from flask import Blueprint, Flask, jsonify, render_template, request, send_from_directory
+from flask import Blueprint, Flask, current_app, jsonify, render_template, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -369,7 +369,7 @@ def create_chat_blueprint():
 
     @blueprint.get('/chat/users')
     def list_chat_users():
-        """Return every known chat identity for recipient selection."""
+        """Return OAuth clients and every identity already known by the chat database."""
         with chat_connection() as connection:
             rows = connection.execute(
                 """SELECT username FROM (
@@ -379,7 +379,15 @@ def create_chat_blueprint():
                        UNION SELECT uploaded_by FROM chat_uploads WHERE uploaded_by IS NOT NULL
                    ) WHERE username IS NOT NULL AND username != '' ORDER BY username COLLATE NOCASE""",
             ).fetchall()
-        return jsonify({'status': 'ok', 'users': [row['username'] for row in rows]})
+        users = {row['username'] for row in rows}
+        sqlalchemy_extension = current_app.extensions.get('sqlalchemy')
+        if sqlalchemy_extension is not None:
+            with sqlalchemy_extension.engine.connect() as connection:
+                oauth_rows = connection.exec_driver_sql(
+                    'SELECT client_id FROM client_credentials ORDER BY client_id COLLATE NOCASE',
+                ).fetchall()
+            users.update(row[0] for row in oauth_rows)
+        return jsonify({'status': 'ok', 'users': sorted(users, key=str.casefold)})
 
     @blueprint.get('/chat/groups/<username>')
     def list_user_groups(username):
