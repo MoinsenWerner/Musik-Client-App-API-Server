@@ -1,5 +1,6 @@
 """Standalone chat API and Flask blueprint for the Musik Client server."""
 
+import json
 import os
 import secrets
 import sqlite3
@@ -53,6 +54,12 @@ CREATE TABLE IF NOT EXISTS chat_group_members (
     joined_at INTEGER NOT NULL,
     PRIMARY KEY (group_id, username),
     FOREIGN KEY (group_id) REFERENCES chat_groups(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS chat_profiles (
+    username TEXT PRIMARY KEY,
+    image_upload_id INTEGER,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (image_upload_id) REFERENCES chat_uploads(id) ON DELETE SET NULL
 );
 CREATE TABLE IF NOT EXISTS chat_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -393,6 +400,38 @@ def create_chat_blueprint():
             download_name=upload['original_name'],
         )
 
+    @blueprint.route('/chat/profile/<username>', methods=['GET', 'POST', 'DELETE'])
+    def chat_profile(username):
+        """Read, replace, or remove a user's profile picture."""
+        username = clean_identity(username, 'username')
+        if request.method == 'GET':
+            with chat_connection() as connection:
+                row = connection.execute(
+                    """SELECT u.response_id, u.original_name, u.mime_type
+                       FROM chat_profiles AS p LEFT JOIN chat_uploads AS u ON u.id = p.image_upload_id
+                       WHERE p.username = ?""", (username,),
+                ).fetchone()
+            return jsonify({'status': 'ok', 'username': username, 'bild': dict(row) if row and row['response_id'] else None})
+        if request.method == 'DELETE':
+            with CHAT_WRITE_LOCK, chat_connection() as connection:
+                connection.execute('DELETE FROM chat_profiles WHERE username = ?', (username,))
+                connection.commit()
+            return jsonify({'status': 'ok'}), 200
+        response_id = request.form.get('bild-upload', '').strip()
+        try:
+            with CHAT_WRITE_LOCK, chat_connection() as connection:
+                upload = get_upload(connection, response_id, 'bild')
+                connection.execute(
+                    """INSERT INTO chat_profiles (username, image_upload_id, updated_at) VALUES (?, ?, ?)
+                       ON CONFLICT(username) DO UPDATE SET image_upload_id=excluded.image_upload_id,
+                       updated_at=excluded.updated_at""",
+                    (username, upload['id'], int(time.time())),
+                )
+                connection.commit()
+        except (ValueError, sqlite3.IntegrityError) as error:
+            return jsonify({'status': 'error', 'message': str(error)}), 400
+        return jsonify({'status': 'ok', 'bild': response_id}), 200
+
     @blueprint.post('/chat/<sender>/<recipient>/<message_type>')
     def send_direct_message(sender, recipient, message_type):
         """Store a direct message; sender and recipient may be identical."""
@@ -419,6 +458,30 @@ def create_chat_blueprint():
                 ).fetchall()
             users.update(row[0] for row in oauth_rows)
         return jsonify({'status': 'ok', 'users': sorted(users, key=str.casefold)})
+
+    @blueprint.get('/chat/share/playlists/<username>')
+    def shareable_playlists(username):
+        """Return server and user-created playlists with songs for the share picker."""
+        sqlalchemy_extension = current_app.extensions.get('sqlalchemy')
+        if sqlalchemy_extension is None:
+            return jsonify({'status': 'ok', 'server_playlists': [], 'eigene_playlists': []})
+        with sqlalchemy_extension.engine.connect() as connection:
+            rows = connection.exec_driver_sql(
+                """SELECT name, spotify_playlist_id, song_names, song_ids, image_urls, creator
+                   FROM playlist_contents ORDER BY created_at, id""",
+            ).mappings().all()
+        playlists = []
+        for row in rows:
+            playlist = dict(row)
+            playlist['songs'] = [
+                {'name': name, 'id': song_id, 'image': image}
+                for name, song_id, image in zip(
+                    json.loads(row['song_names']), json.loads(row['song_ids']), json.loads(row['image_urls']),
+                )
+            ]
+            playlists.append(playlist)
+        own = [item for item in playlists if (item['creator'] or 'Admin').casefold() == username.casefold()]
+        return jsonify({'status': 'ok', 'server_playlists': playlists, 'eigene_playlists': own})
 
     @blueprint.get('/chat/groups/<username>')
     def list_user_groups(username):
@@ -454,7 +517,7 @@ def create_chat_blueprint():
                 (username,),
             ).fetchall()
         conversations = [
-            {'type': 'direct', 'name': row['name'], 'group_id': None,
+            {'type': 'self' if row['name'] == username else 'direct', 'name': row['name'], 'group_id': None,
              'last_message_id': row['last_message_id'], 'last_message_at': row['last_message_at']}
             for row in direct_rows if row['name']
         ] + [
@@ -462,6 +525,14 @@ def create_chat_blueprint():
              'last_message_id': row['last_message_id'], 'last_message_at': row['last_message_at']}
             for row in group_rows
         ]
+        with chat_connection() as connection:
+            profile_rows = connection.execute(
+                """SELECT p.username, u.response_id FROM chat_profiles AS p
+                   JOIN chat_uploads AS u ON u.id = p.image_upload_id""",
+            ).fetchall()
+        profile_images = {row['username']: row['response_id'] for row in profile_rows}
+        for conversation in conversations:
+            conversation['profile_image'] = profile_images.get(conversation['name'])
         conversations.sort(key=lambda item: (item['last_message_at'], item['last_message_id'] or 0), reverse=True)
         return jsonify({'status': 'ok', 'chats': conversations})
 
@@ -521,18 +592,23 @@ def create_chat_blueprint():
     def change_group_members(group_id):
         """Add or remove one group member using action=add/remove."""
         action = request.args.get('action', '').lower()
+        actor = request.args.get('ersteller', '').strip()
         try:
             username = clean_identity(request.args.get('username', ''), 'username')
             with CHAT_WRITE_LOCK, chat_connection() as connection:
-                group = connection.execute('SELECT id FROM chat_groups WHERE id = ?', (group_id,)).fetchone()
+                group = connection.execute('SELECT id, creator FROM chat_groups WHERE id = ?', (group_id,)).fetchone()
                 if group is None:
                     return jsonify({'status': 'error', 'message': 'Gruppe nicht gefunden.'}), 404
+                if actor != group['creator']:
+                    return jsonify({'status': 'error', 'message': 'Nur der Gruppenersteller darf Mitglieder ändern.'}), 403
                 if action == 'add':
                     connection.execute(
                         'INSERT OR IGNORE INTO chat_group_members (group_id, username, joined_at) VALUES (?, ?, ?)',
                         (group_id, username, int(time.time())),
                     )
                 elif action == 'remove':
+                    if username == group['creator']:
+                        raise ValueError('Der Gruppenersteller kann nicht aus der Gruppe entfernt werden.')
                     connection.execute(
                         'DELETE FROM chat_group_members WHERE group_id = ? AND username = ?',
                         (group_id, username),
@@ -543,6 +619,28 @@ def create_chat_blueprint():
         except (ValueError, sqlite3.Error) as error:
             return jsonify({'status': 'error', 'message': str(error)}), 400
         return jsonify({'status': 'ok'}), 200
+
+    @blueprint.get('/chat/group/<int:group_id>')
+    def group_details(group_id):
+        """Return group metadata and members for every group participant."""
+        username = request.args.get('username', '').strip()
+        with chat_connection() as connection:
+            group = connection.execute('SELECT * FROM chat_groups WHERE id = ?', (group_id,)).fetchone()
+            if group is None:
+                return jsonify({'status': 'error', 'message': 'Gruppe nicht gefunden.'}), 404
+            allowed = connection.execute(
+                'SELECT 1 FROM chat_group_members WHERE group_id = ? AND username = ?',
+                (group_id, username),
+            ).fetchone()
+            if allowed is None:
+                return jsonify({'status': 'error', 'message': 'Benutzer ist kein Gruppenmitglied.'}), 403
+            members = connection.execute(
+                'SELECT username FROM chat_group_members WHERE group_id = ? ORDER BY username COLLATE NOCASE',
+                (group_id,),
+            ).fetchall()
+        result = dict(group)
+        result['mitglieder'] = [row['username'] for row in members]
+        return jsonify({'status': 'ok', 'gruppe': result})
 
     @blueprint.post('/chat/group/<int:group_id>/<sender>/<message_type>')
     def send_group_message(group_id, sender, message_type):
