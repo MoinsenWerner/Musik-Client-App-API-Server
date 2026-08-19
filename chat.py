@@ -367,6 +367,52 @@ def create_chat_blueprint():
         """Store a direct message; sender and recipient may be identical."""
         return insert_message(sender, recipient, None, message_type)
 
+    @blueprint.get('/chat/users')
+    def list_chat_users():
+        """Return every known chat identity for recipient selection."""
+        with chat_connection() as connection:
+            rows = connection.execute(
+                """SELECT username FROM (
+                       SELECT sender AS username FROM chat_messages
+                       UNION SELECT recipient FROM chat_messages WHERE recipient IS NOT NULL
+                       UNION SELECT username FROM chat_group_members
+                       UNION SELECT uploaded_by FROM chat_uploads WHERE uploaded_by IS NOT NULL
+                   ) WHERE username IS NOT NULL AND username != '' ORDER BY username COLLATE NOCASE""",
+            ).fetchall()
+        return jsonify({'status': 'ok', 'users': [row['username'] for row in rows]})
+
+    @blueprint.get('/chat/groups/<username>')
+    def list_user_groups(username):
+        """Return groups of which the selected username is a member."""
+        with chat_connection() as connection:
+            rows = connection.execute(
+                """SELECT g.id, g.name, g.creator, g.created_at
+                   FROM chat_groups AS g JOIN chat_group_members AS gm ON gm.group_id = g.id
+                   WHERE gm.username = ? ORDER BY g.name COLLATE NOCASE, g.id""",
+                (username,),
+            ).fetchall()
+        return jsonify({'status': 'ok', 'gruppen': [dict(row) for row in rows]})
+
+    @blueprint.get('/chat/updates/<username>')
+    def chat_updates(username):
+        """Return direct and group messages newer than the supplied message ID."""
+        try:
+            after = int(request.args.get('after', '0'))
+            if after < 0:
+                raise ValueError
+        except ValueError:
+            return jsonify({'status': 'error', 'message': 'after muss eine nichtnegative Zahl sein.'}), 400
+        rows = message_select(
+            """m.id > ? AND (
+                   (m.group_id IS NULL AND (m.sender = ? OR m.recipient = ?))
+                   OR m.group_id IN (SELECT group_id FROM chat_group_members WHERE username = ?)
+               )""",
+            (after, username, username, username),
+            1000,
+            0,
+        )
+        return jsonify({'status': 'ok', 'nachrichten': [serialize_message(row) for row in rows]})
+
     @blueprint.post('/chat/self/<username>/<message_type>')
     def send_self_message(username, message_type):
         """Store a message in a user's explicit self-chat."""

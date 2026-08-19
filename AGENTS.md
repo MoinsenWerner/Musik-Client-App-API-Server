@@ -267,6 +267,9 @@ The chat API is registered automatically in the main app and is also independent
 - **POST `/chat/upload/<kind>`** — Uploads multipart field `upload` before sending a message. `kind` is `bild` or `datei`; optional form field `sender` records who uploaded it. Images are restricted to AVIF, GIF, JPEG/JPG, PNG, or WebP. The file is streamed to `chat_uploads/`, metadata is stored in `chat.db`, and HTTP 201 JSON returns `upload_response_id`.
 - **GET `/chat/upload/<response_id>`** — Downloads an uploaded attachment using its opaque upload response ID and original filename. Optional `inline=1` returns it with inline disposition for image/video rendering.
 - **POST `/chat/<sender>/<recipient>/<message_type>`** — Sends a direct message; sender and recipient may be identical for a self-chat. Valid types are `picture`, `text`, `text-mit-link`, `link`, `datei`, `text-mit-bild`, and `text-mit-datei`. Query `inhalt` is required for text/link types, `datei-upload` is required for file types, and `bild-upload` is required for image types. Optional `antwort-auf` references a message ID from the same direct chat. Attachment values must be response IDs returned by the matching upload route. Returns HTTP 201 JSON with `message_id`.
+- **GET `/chat/users`** — Returns every known identity found in messages, group memberships, or uploads, sorted by username. The webchat uses this list for its recipient dropdown.
+- **GET `/chat/groups/<username>`** — Returns the groups in which the specified user is a member, including group ID, name, creator, and creation time.
+- **GET `/chat/updates/<username>`** — Returns up to 1,000 direct and joined-group messages whose numeric ID is greater than optional query `after` (default `0`). The webchat polls this endpoint to update an open conversation and show an unread-message badge/browser notification.
 - **POST `/chat/self/<username>/<message_type>`** — Explicit convenience route for a self-chat; uses the same type-dependent query parameters and stores username as both sender and recipient.
 - **POST `/chat/group/create`** — Creates a group. Required query parameters: `name` and `ersteller`; optional `mitglieder` is a comma-separated list. The creator is always included. Returns `gruppen_id` and members.
 - **POST `/chat/group/<int:group_id>/members`** — Changes membership using required query `action=add|remove` and `username`. Returns 404 for a missing group.
@@ -278,6 +281,8 @@ The chat API is registered automatically in the main app and is also independent
 - **POST `/chat/gpt/<username>`** — Required query `inhalt`. Sends the latest 40 stored user/assistant messages plus the new prompt to OpenAI's Responses API using server environment variable `OPENAI_API_KEY` and model `OPENAI_MODEL` (default `gpt-5`). On success, stores both prompt and answer in `chatgpt_messages` and returns the answer. Missing configuration returns 503; upstream failures return 502.
 - **GET `/chat/gpt/<username>/history`** — Returns the persistent per-user ChatGPT conversation with optional `limit` and `offset`.
 - **DELETE `/chat/gpt/<username>/history`** — Deletes every remembered ChatGPT prompt and answer for the specified username.
+
+The webchat constrains itself to the dynamic viewport height: its composer remains fixed at the bottom while only the message history scrolls. Recipient identities are loaded into a dropdown after login. The Groups tab contains its own creation form and lists the signed-in user's groups. A four-second update poll displays an unread badge and page-title count for messages outside the currently open conversation; when browser notification permission is granted, background tabs also receive a system notification.
 
 ## 8. Response conventions and notable quirks
 
