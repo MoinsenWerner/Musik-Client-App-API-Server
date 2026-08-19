@@ -72,6 +72,14 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     CHECK ((recipient IS NOT NULL AND group_id IS NULL) OR
            (recipient IS NULL AND group_id IS NOT NULL))
 );
+CREATE TABLE IF NOT EXISTS chat_message_attachments (
+    message_id INTEGER NOT NULL,
+    upload_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (message_id, upload_id),
+    FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
+    FOREIGN KEY (upload_id) REFERENCES chat_uploads(id) ON DELETE CASCADE
+);
 CREATE INDEX IF NOT EXISTS idx_chat_direct
     ON chat_messages(sender, recipient, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_chat_group
@@ -103,6 +111,14 @@ def initialize_chat_storage():
             connection.execute(
                 'ALTER TABLE chat_messages ADD COLUMN reply_to_message_id INTEGER'
             )
+        connection.execute(
+            """INSERT OR IGNORE INTO chat_message_attachments (message_id, upload_id, position)
+               SELECT id, image_upload_id, 0 FROM chat_messages WHERE image_upload_id IS NOT NULL"""
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO chat_message_attachments (message_id, upload_id, position)
+               SELECT id, file_upload_id, 1 FROM chat_messages WHERE file_upload_id IS NOT NULL"""
+        )
 
 
 @contextmanager
@@ -135,7 +151,7 @@ def get_upload(connection, response_id, expected_kind):
     return upload
 
 
-def validate_message(message_type, content, file_upload, image_upload):
+def validate_message(message_type, content, file_uploads, image_uploads):
     if message_type not in MESSAGE_TYPES:
         raise ValueError('Unbekannter Nachrichtentyp.')
     requires_content = message_type in {'text', 'text-mit-link', 'link', 'text-mit-bild', 'text-mit-datei'}
@@ -143,28 +159,28 @@ def validate_message(message_type, content, file_upload, image_upload):
     requires_image = message_type in {'picture', 'text-mit-bild'}
     if requires_content and not content:
         raise ValueError('Für diesen Nachrichtentyp ist inhalt erforderlich.')
-    if requires_file and file_upload is None:
+    if requires_file and not file_uploads:
         raise ValueError('Für diesen Nachrichtentyp ist datei-upload erforderlich.')
-    if requires_image and image_upload is None:
+    if requires_image and not image_uploads:
         raise ValueError('Für diesen Nachrichtentyp ist bild-upload erforderlich.')
-    if not requires_file and file_upload is not None:
-        raise ValueError('datei-upload passt nicht zum gewählten Nachrichtentyp.')
-    if not requires_image and image_upload is not None:
-        raise ValueError('bild-upload passt nicht zum gewählten Nachrichtentyp.')
 
 
 def insert_message(sender, recipient, group_id, message_type):
     content = request.args.get('inhalt', '').strip() or None
-    file_response_id = request.args.get('datei-upload', '').strip() or None
-    image_response_id = request.args.get('bild-upload', '').strip() or None
+    file_response_ids = list(dict.fromkeys(
+        value.strip() for value in request.args.getlist('datei-upload') if value.strip()
+    ))
+    image_response_ids = list(dict.fromkeys(
+        value.strip() for value in request.args.getlist('bild-upload') if value.strip()
+    ))
     reply_to_raw = request.args.get('antwort-auf', '').strip() or None
     try:
         sender = clean_identity(sender, 'sender')
         recipient = clean_identity(recipient, 'empfänger') if recipient is not None else None
         with CHAT_WRITE_LOCK, chat_connection() as connection:
-            file_upload = get_upload(connection, file_response_id, 'datei')
-            image_upload = get_upload(connection, image_response_id, 'bild')
-            validate_message(message_type, content, file_upload, image_upload)
+            file_uploads = [get_upload(connection, value, 'datei') for value in file_response_ids]
+            image_uploads = [get_upload(connection, value, 'bild') for value in image_response_ids]
+            validate_message(message_type, content, file_uploads, image_uploads)
             try:
                 reply_to_message_id = int(reply_to_raw) if reply_to_raw else None
             except ValueError as error:
@@ -197,20 +213,34 @@ def insert_message(sender, recipient, group_id, message_type):
                     group_id,
                     message_type,
                     content,
-                    file_upload['id'] if file_upload else None,
-                    image_upload['id'] if image_upload else None,
+                    file_uploads[0]['id'] if file_uploads else None,
+                    image_uploads[0]['id'] if image_uploads else None,
                     reply_to_message_id,
                     int(time.time()),
                 ),
             )
-            connection.commit()
             message_id = cursor.lastrowid
+            attachments = [*image_uploads, *file_uploads]
+            connection.executemany(
+                """INSERT INTO chat_message_attachments (message_id, upload_id, position)
+                   VALUES (?, ?, ?)""",
+                [(message_id, upload['id'], position) for position, upload in enumerate(attachments)],
+            )
+            connection.commit()
     except (ValueError, sqlite3.IntegrityError) as error:
         return jsonify({'status': 'error', 'message': str(error)}), 400
     return jsonify({'status': 'ok', 'message_id': message_id}), 201
 
 
 def serialize_message(row):
+    with chat_connection() as connection:
+        attachments = [dict(upload) for upload in connection.execute(
+            """SELECT u.response_id, u.kind, u.original_name, u.mime_type, u.size
+               FROM chat_message_attachments AS a
+               JOIN chat_uploads AS u ON u.id = a.upload_id
+               WHERE a.message_id = ? ORDER BY a.position, u.id""",
+            (row['id'],),
+        ).fetchall()]
     return {
         'id': row['id'],
         'sender': row['sender'],
@@ -224,6 +254,7 @@ def serialize_message(row):
         'datei_mime_type': row['file_mime_type'],
         'bild_name': row['image_original_name'],
         'bild_mime_type': row['image_mime_type'],
+        'anhaenge': attachments,
         'antwort_auf': row['reply_to_message_id'],
         'antwort_sender': row['reply_sender'],
         'antwort_inhalt': row['reply_content'],
@@ -401,6 +432,39 @@ def create_chat_blueprint():
             ).fetchall()
         return jsonify({'status': 'ok', 'gruppen': [dict(row) for row in rows]})
 
+    @blueprint.get('/chat/conversations/<username>')
+    def list_conversations(username):
+        """Return direct chats and joined groups ordered by their latest message."""
+        with chat_connection() as connection:
+            direct_rows = connection.execute(
+                """SELECT CASE WHEN sender = ? THEN recipient ELSE sender END AS name,
+                          MAX(id) AS last_message_id, MAX(created_at) AS last_message_at
+                   FROM chat_messages
+                   WHERE group_id IS NULL AND (sender = ? OR recipient = ?)
+                   GROUP BY name""",
+                (username, username, username),
+            ).fetchall()
+            group_rows = connection.execute(
+                """SELECT g.id, g.name, MAX(m.id) AS last_message_id,
+                          COALESCE(MAX(m.created_at), g.created_at) AS last_message_at
+                   FROM chat_groups AS g
+                   JOIN chat_group_members AS gm ON gm.group_id = g.id
+                   LEFT JOIN chat_messages AS m ON m.group_id = g.id
+                   WHERE gm.username = ? GROUP BY g.id, g.name, g.created_at""",
+                (username,),
+            ).fetchall()
+        conversations = [
+            {'type': 'direct', 'name': row['name'], 'group_id': None,
+             'last_message_id': row['last_message_id'], 'last_message_at': row['last_message_at']}
+            for row in direct_rows if row['name']
+        ] + [
+            {'type': 'group', 'name': row['name'], 'group_id': row['id'],
+             'last_message_id': row['last_message_id'], 'last_message_at': row['last_message_at']}
+            for row in group_rows
+        ]
+        conversations.sort(key=lambda item: (item['last_message_at'], item['last_message_id'] or 0), reverse=True)
+        return jsonify({'status': 'ok', 'chats': conversations})
+
     @blueprint.get('/chat/updates/<username>')
     def chat_updates(username):
         """Return direct and group messages newer than the supplied message ID."""
@@ -521,8 +585,8 @@ def create_chat_blueprint():
         query = f"""SELECT DISTINCT u.response_id, u.kind, u.original_name,
                             u.mime_type, u.size, u.uploaded_by, u.created_at
                      FROM chat_messages AS m
-                     JOIN chat_uploads AS u
-                       ON u.id = m.file_upload_id OR u.id = m.image_upload_id
+                     JOIN chat_message_attachments AS a ON a.message_id = m.id
+                     JOIN chat_uploads AS u ON u.id = a.upload_id
                      WHERE {where_clause}
                      ORDER BY u.created_at ASC, u.id ASC"""
         with chat_connection() as connection:
