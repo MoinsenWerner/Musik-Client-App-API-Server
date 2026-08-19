@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -60,6 +61,39 @@ CREATE TABLE IF NOT EXISTS chat_profiles (
     image_upload_id INTEGER,
     updated_at INTEGER NOT NULL,
     FOREIGN KEY (image_upload_id) REFERENCES chat_uploads(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS chat_user_settings (
+    username TEXT PRIMARY KEY,
+    display_name TEXT,
+    presence_visibility TEXT NOT NULL DEFAULT 'all',
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chat_presence (
+    username TEXT PRIMARY KEY,
+    page_open INTEGER NOT NULL DEFAULT 1,
+    last_seen INTEGER NOT NULL,
+    last_interaction INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chat_blocks (
+    blocker TEXT NOT NULL,
+    blocked TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (blocker, blocked)
+);
+CREATE TABLE IF NOT EXISTS chat_clears (
+    username TEXT NOT NULL,
+    peer TEXT NOT NULL DEFAULT '',
+    group_id INTEGER NOT NULL DEFAULT 0,
+    before_message_id INTEGER NOT NULL,
+    PRIMARY KEY (username, peer, group_id)
+);
+CREATE TABLE IF NOT EXISTS chat_message_receipts (
+    message_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    delivered_at INTEGER,
+    read_at INTEGER,
+    PRIMARY KEY (message_id, username),
+    FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS chat_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,6 +219,14 @@ def insert_message(sender, recipient, group_id, message_type):
         sender = clean_identity(sender, 'sender')
         recipient = clean_identity(recipient, 'empfänger') if recipient is not None else None
         with CHAT_WRITE_LOCK, chat_connection() as connection:
+            if recipient is not None and recipient != sender:
+                blocked = connection.execute(
+                    """SELECT 1 FROM chat_blocks WHERE
+                       (blocker = ? AND blocked = ?) OR (blocker = ? AND blocked = ?)""",
+                    (sender, recipient, recipient, sender),
+                ).fetchone()
+                if blocked:
+                    raise ValueError('Zwischen diesen Benutzern sind Nachrichten blockiert.')
             file_uploads = [get_upload(connection, value, 'datei') for value in file_response_ids]
             image_uploads = [get_upload(connection, value, 'bild') for value in image_response_ids]
             validate_message(message_type, content, file_uploads, image_uploads)
@@ -233,6 +275,17 @@ def insert_message(sender, recipient, group_id, message_type):
                    VALUES (?, ?, ?)""",
                 [(message_id, upload['id'], position) for position, upload in enumerate(attachments)],
             )
+            if group_id is not None:
+                receipt_users = [row[0] for row in connection.execute(
+                    'SELECT username FROM chat_group_members WHERE group_id = ? AND username != ?',
+                    (group_id, sender),
+                ).fetchall()]
+            else:
+                receipt_users = [recipient] if recipient and recipient != sender else []
+            connection.executemany(
+                'INSERT INTO chat_message_receipts (message_id, username) VALUES (?, ?)',
+                [(message_id, username) for username in receipt_users],
+            )
             connection.commit()
     except (ValueError, sqlite3.IntegrityError) as error:
         return jsonify({'status': 'error', 'message': str(error)}), 400
@@ -248,6 +301,14 @@ def serialize_message(row):
                WHERE a.message_id = ? ORDER BY a.position, u.id""",
             (row['id'],),
         ).fetchall()]
+        receipt = connection.execute(
+            """SELECT COUNT(*) AS total, SUM(delivered_at IS NOT NULL) AS delivered,
+                      SUM(read_at IS NOT NULL) AS read_count
+               FROM chat_message_receipts WHERE message_id = ?""", (row['id'],),
+        ).fetchone()
+    receipt_status = 'read' if receipt['total'] and receipt['read_count'] == receipt['total'] else (
+        'delivered' if receipt['total'] and receipt['delivered'] == receipt['total'] else 'sent'
+    )
     return {
         'id': row['id'],
         'sender': row['sender'],
@@ -262,6 +323,7 @@ def serialize_message(row):
         'bild_name': row['image_original_name'],
         'bild_mime_type': row['image_mime_type'],
         'anhaenge': attachments,
+        'receipt_status': receipt_status,
         'antwort_auf': row['reply_to_message_id'],
         'antwort_sender': row['reply_sender'],
         'antwort_inhalt': row['reply_content'],
@@ -483,6 +545,120 @@ def create_chat_blueprint():
         own = [item for item in playlists if (item['creator'] or 'Admin').casefold() == username.casefold()]
         return jsonify({'status': 'ok', 'server_playlists': playlists, 'eigene_playlists': own})
 
+    @blueprint.route('/chat/settings/<username>', methods=['GET', 'POST'])
+    def chat_settings(username):
+        """Read or update display name and presence visibility."""
+        if request.method == 'POST':
+            display_name = request.form.get('display_name', '').strip() or username
+            visibility = request.form.get('presence_visibility', 'all')
+            if visibility not in {'all', 'contacts', 'nobody'}:
+                return jsonify({'status': 'error', 'message': 'Ungültige Sichtbarkeit.'}), 400
+            with CHAT_WRITE_LOCK, chat_connection() as connection:
+                connection.execute(
+                    """INSERT INTO chat_user_settings VALUES (?, ?, ?, ?)
+                       ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name,
+                       presence_visibility=excluded.presence_visibility, updated_at=excluded.updated_at""",
+                    (username, display_name, visibility, int(time.time())),
+                )
+                connection.commit()
+        with chat_connection() as connection:
+            row = connection.execute('SELECT * FROM chat_user_settings WHERE username = ?', (username,)).fetchone()
+        return jsonify({'status': 'ok', 'settings': dict(row) if row else {
+            'username': username, 'display_name': username, 'presence_visibility': 'all',
+        }})
+
+    @blueprint.route('/chat/presence/<username>', methods=['GET', 'POST'])
+    def chat_presence(username):
+        """Update activity or return the user's privacy-aware online state."""
+        now = int(time.time())
+        if request.method == 'POST':
+            interaction = request.form.get('interaction') == '1'
+            page_open = request.form.get('page_open', '1') == '1'
+            with CHAT_WRITE_LOCK, chat_connection() as connection:
+                existing = connection.execute('SELECT last_interaction FROM chat_presence WHERE username = ?', (username,)).fetchone()
+                last_interaction = now if interaction or existing is None else existing['last_interaction']
+                connection.execute(
+                    """INSERT INTO chat_presence VALUES (?, ?, ?, ?)
+                       ON CONFLICT(username) DO UPDATE SET page_open=excluded.page_open,
+                       last_seen=excluded.last_seen, last_interaction=excluded.last_interaction""",
+                    (username, int(page_open), now, last_interaction),
+                )
+                connection.commit()
+            return jsonify({'status': 'ok'})
+        viewer = request.args.get('viewer', '')
+        with chat_connection() as connection:
+            presence = connection.execute('SELECT * FROM chat_presence WHERE username = ?', (username,)).fetchone()
+            settings = connection.execute('SELECT presence_visibility FROM chat_user_settings WHERE username = ?', (username,)).fetchone()
+            is_contact = connection.execute(
+                """SELECT 1 FROM chat_messages WHERE group_id IS NULL AND
+                   ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) LIMIT 1""",
+                (username, viewer, viewer, username),
+            ).fetchone()
+        visibility = settings['presence_visibility'] if settings else 'all'
+        visible = viewer == username or visibility == 'all' or (visibility == 'contacts' and is_contact)
+        state = 'hidden'
+        if visible:
+            if not presence or not presence['page_open'] or now - presence['last_seen'] > 45:
+                state = 'offline'
+            elif now - presence['last_interaction'] >= 180:
+                state = 'away'
+            else:
+                state = 'online'
+        return jsonify({'status': 'ok', 'presence': state})
+
+    @blueprint.route('/chat/block/<username>/<other>', methods=['GET', 'POST', 'DELETE'])
+    def chat_block(username, other):
+        """Read, create, or remove a per-user direct-chat block."""
+        with CHAT_WRITE_LOCK, chat_connection() as connection:
+            if request.method == 'POST':
+                connection.execute('INSERT OR IGNORE INTO chat_blocks VALUES (?, ?, ?)', (username, other, int(time.time())))
+            elif request.method == 'DELETE':
+                connection.execute('DELETE FROM chat_blocks WHERE blocker=? AND blocked=?', (username, other))
+            connection.commit()
+            blocked = connection.execute('SELECT 1 FROM chat_blocks WHERE blocker=? AND blocked=?', (username, other)).fetchone()
+        return jsonify({'status': 'ok', 'blocked': blocked is not None})
+
+    @blueprint.post('/chat/clear/<username>')
+    def clear_chat_for_user(username):
+        """Hide the current direct/self/group history for only one user."""
+        peer = request.args.get('peer', '')
+        group_id = int(request.args.get('group_id', '0') or 0)
+        with CHAT_WRITE_LOCK, chat_connection() as connection:
+            maximum = connection.execute('SELECT COALESCE(MAX(id), 0) FROM chat_messages').fetchone()[0]
+            connection.execute(
+                """INSERT INTO chat_clears VALUES (?, ?, ?, ?)
+                   ON CONFLICT(username, peer, group_id) DO UPDATE SET before_message_id=excluded.before_message_id""",
+                (username, peer, group_id, maximum),
+            )
+            connection.commit()
+        return jsonify({'status': 'ok', 'before_message_id': maximum})
+
+    @blueprint.get('/chat/info/<username>/<other>')
+    def direct_chat_info(username, other):
+        """Return links, media, common groups, and block state for a direct chat."""
+        with chat_connection() as connection:
+            messages = connection.execute(
+                """SELECT id, content FROM chat_messages WHERE group_id IS NULL AND
+                   ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) ORDER BY id""",
+                (username, other, other, username),
+            ).fetchall()
+            media = connection.execute(
+                """SELECT DISTINCT u.response_id, u.kind, u.original_name, u.mime_type
+                   FROM chat_messages m JOIN chat_message_attachments a ON a.message_id=m.id
+                   JOIN chat_uploads u ON u.id=a.upload_id WHERE m.group_id IS NULL AND
+                   ((m.sender=? AND m.recipient=?) OR (m.sender=? AND m.recipient=?))""",
+                (username, other, other, username),
+            ).fetchall()
+            groups = connection.execute(
+                """SELECT g.id, g.name FROM chat_groups g JOIN chat_group_members a ON a.group_id=g.id
+                   JOIN chat_group_members b ON b.group_id=g.id WHERE a.username=? AND b.username=?""",
+                (username, other),
+            ).fetchall()
+            blocked = connection.execute('SELECT 1 FROM chat_blocks WHERE blocker=? AND blocked=?', (username, other)).fetchone()
+        links = [link for row in messages for link in re.findall(r'https?://[^\s]+', row['content'] or '')]
+        return jsonify({'status': 'ok', 'media': [dict(row) for row in media], 'links': links,
+                        'common_groups': [dict(row) for row in groups], 'blocked': blocked is not None})
+
     @blueprint.get('/chat/groups/<username>')
     def list_user_groups(username):
         """Return groups of which the selected username is a member."""
@@ -533,6 +709,41 @@ def create_chat_blueprint():
         profile_images = {row['username']: row['response_id'] for row in profile_rows}
         for conversation in conversations:
             conversation['profile_image'] = profile_images.get(conversation['name'])
+            with chat_connection() as connection:
+                if conversation['type'] == 'group':
+                    last = connection.execute(
+                        'SELECT id, sender, content FROM chat_messages WHERE group_id=? ORDER BY id DESC LIMIT 1',
+                        (conversation['group_id'],),
+                    ).fetchone()
+                else:
+                    last = connection.execute(
+                        """SELECT id, sender, content FROM chat_messages WHERE group_id IS NULL AND
+                           ((sender=? AND recipient=?) OR (sender=? AND recipient=?)) ORDER BY id DESC LIMIT 1""",
+                        (username, conversation['name'], conversation['name'], username),
+                    ).fetchone()
+                unread = connection.execute(
+                    """SELECT COUNT(*) FROM chat_message_receipts r JOIN chat_messages m ON m.id=r.message_id
+                       WHERE r.username=? AND r.read_at IS NULL AND
+                       ((? > 0 AND m.group_id=?) OR (? = 0 AND m.group_id IS NULL AND
+                       (m.sender=? OR m.recipient=?)))""",
+                    (username, conversation['group_id'] or 0, conversation['group_id'] or 0,
+                     conversation['group_id'] or 0, conversation['name'], conversation['name']),
+                ).fetchone()[0]
+            conversation['last_message'] = (last['content'] if last else None) or ('Anhang' if last else '')
+            conversation['last_sender'] = last['sender'] if last else None
+            conversation['unread_count'] = unread
+            if last and last['sender'] == username:
+                with chat_connection() as connection:
+                    receipt = connection.execute(
+                        """SELECT COUNT(*) total, SUM(delivered_at IS NOT NULL) delivered,
+                                  SUM(read_at IS NOT NULL) read_count
+                           FROM chat_message_receipts WHERE message_id=?""", (last['id'],),
+                    ).fetchone()
+                conversation['receipt_status'] = 'read' if receipt['total'] and receipt['read_count'] == receipt['total'] else (
+                    'delivered' if receipt['total'] and receipt['delivered'] == receipt['total'] else 'sent'
+                )
+            else:
+                conversation['receipt_status'] = None
         conversations.sort(key=lambda item: (item['last_message_at'], item['last_message_id'] or 0), reverse=True)
         return jsonify({'status': 'ok', 'chats': conversations})
 
@@ -554,6 +765,12 @@ def create_chat_blueprint():
             1000,
             0,
         )
+        with CHAT_WRITE_LOCK, chat_connection() as connection:
+            connection.executemany(
+                'UPDATE chat_message_receipts SET delivered_at=COALESCE(delivered_at, ?) WHERE message_id=? AND username=?',
+                [(int(time.time()), row['id'], username) for row in rows],
+            )
+            connection.commit()
         return jsonify({'status': 'ok', 'nachrichten': [serialize_message(row) for row in rows]})
 
     @blueprint.post('/chat/self/<username>/<message_type>')
@@ -661,12 +878,23 @@ def create_chat_blueprint():
             limit, offset = pagination_values()
         except ValueError as error:
             return jsonify({'status': 'error', 'message': str(error)}), 400
+        with chat_connection() as connection:
+            clear = connection.execute(
+                'SELECT before_message_id FROM chat_clears WHERE username=? AND peer=? AND group_id=0',
+                (user_one, user_two),
+            ).fetchone()
         rows = message_select(
-            'm.group_id IS NULL AND ((m.sender = ? AND m.recipient = ?) OR (m.sender = ? AND m.recipient = ?))',
-            (user_one, user_two, user_two, user_one),
+            'm.id > ? AND m.group_id IS NULL AND ((m.sender = ? AND m.recipient = ?) OR (m.sender = ? AND m.recipient = ?))',
+            (clear['before_message_id'] if clear else 0, user_one, user_two, user_two, user_one),
             limit,
             offset,
         )
+        with CHAT_WRITE_LOCK, chat_connection() as connection:
+            connection.executemany(
+                'UPDATE chat_message_receipts SET delivered_at=COALESCE(delivered_at, ?), read_at=? WHERE message_id=? AND username=?',
+                [(int(time.time()), int(time.time()), row['id'], user_one) for row in rows],
+            )
+            connection.commit()
         return jsonify({'status': 'ok', 'nachrichten': [serialize_message(row) for row in rows]})
 
     @blueprint.get('/chat/group/<int:group_id>/history')
@@ -676,7 +904,20 @@ def create_chat_blueprint():
             limit, offset = pagination_values()
         except ValueError as error:
             return jsonify({'status': 'error', 'message': str(error)}), 400
-        rows = message_select('m.group_id = ?', (group_id,), limit, offset)
+        viewer = request.args.get('username', '')
+        with chat_connection() as connection:
+            clear = connection.execute(
+                'SELECT before_message_id FROM chat_clears WHERE username=? AND peer=? AND group_id=?',
+                (viewer, '', group_id),
+            ).fetchone()
+        rows = message_select('m.id > ? AND m.group_id = ?', (clear['before_message_id'] if clear else 0, group_id), limit, offset)
+        if viewer:
+            with CHAT_WRITE_LOCK, chat_connection() as connection:
+                connection.executemany(
+                    'UPDATE chat_message_receipts SET delivered_at=COALESCE(delivered_at, ?), read_at=? WHERE message_id=? AND username=?',
+                    [(int(time.time()), int(time.time()), row['id'], viewer) for row in rows],
+                )
+                connection.commit()
         return jsonify({'status': 'ok', 'nachrichten': [serialize_message(row) for row in rows]})
 
     def media_response(where_clause, parameters):
