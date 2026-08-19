@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS chat_group_members (
     group_id INTEGER NOT NULL,
     username TEXT NOT NULL,
     joined_at INTEGER NOT NULL,
+    can_manage_members INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (group_id, username),
     FOREIGN KEY (group_id) REFERENCES chat_groups(id) ON DELETE CASCADE
 );
@@ -85,6 +86,15 @@ CREATE TABLE IF NOT EXISTS chat_clears (
     peer TEXT NOT NULL DEFAULT '',
     group_id INTEGER NOT NULL DEFAULT 0,
     before_message_id INTEGER NOT NULL,
+    PRIMARY KEY (username, peer, group_id)
+);
+CREATE TABLE IF NOT EXISTS chat_conversation_preferences (
+    username TEXT NOT NULL,
+    peer TEXT NOT NULL DEFAULT '',
+    group_id INTEGER NOT NULL DEFAULT 0,
+    pinned_at INTEGER,
+    forced_unread INTEGER NOT NULL DEFAULT 0,
+    hidden INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (username, peer, group_id)
 );
 CREATE TABLE IF NOT EXISTS chat_message_receipts (
@@ -151,6 +161,13 @@ def initialize_chat_storage():
         if 'reply_to_message_id' not in message_columns:
             connection.execute(
                 'ALTER TABLE chat_messages ADD COLUMN reply_to_message_id INTEGER'
+            )
+        member_columns = {
+            column[1] for column in connection.execute('PRAGMA table_info(chat_group_members)')
+        }
+        if 'can_manage_members' not in member_columns:
+            connection.execute(
+                'ALTER TABLE chat_group_members ADD COLUMN can_manage_members INTEGER NOT NULL DEFAULT 0'
             )
         connection.execute(
             """INSERT OR IGNORE INTO chat_message_attachments (message_id, upload_id, position)
@@ -286,6 +303,16 @@ def insert_message(sender, recipient, group_id, message_type):
                 'INSERT INTO chat_message_receipts (message_id, username) VALUES (?, ?)',
                 [(message_id, username) for username in receipt_users],
             )
+            visible_users = {sender, *receipt_users}
+            for username in visible_users:
+                preference_peer = '' if group_id is not None else (
+                    recipient if username == sender else sender
+                )
+                connection.execute(
+                    """UPDATE chat_conversation_preferences SET hidden=0
+                       WHERE username=? AND peer=? AND group_id=?""",
+                    (username, preference_peer, group_id or 0),
+                )
             connection.commit()
     except (ValueError, sqlite3.IntegrityError) as error:
         return jsonify({'status': 'error', 'message': str(error)}), 400
@@ -529,7 +556,8 @@ def create_chat_blueprint():
             return jsonify({'status': 'ok', 'server_playlists': [], 'eigene_playlists': []})
         with sqlalchemy_extension.engine.connect() as connection:
             rows = connection.exec_driver_sql(
-                """SELECT name, spotify_playlist_id, song_names, song_ids, image_urls, creator
+                """SELECT name, playlist_id AS spotify_playlist_id, song_names, song_ids,
+                          image_links AS image_urls, creator
                    FROM playlist_contents ORDER BY created_at, id""",
             ).mappings().all()
         playlists = []
@@ -633,6 +661,55 @@ def create_chat_blueprint():
             connection.commit()
         return jsonify({'status': 'ok', 'before_message_id': maximum})
 
+    @blueprint.post('/chat/conversation/<username>')
+    def update_conversation_preference(username):
+        """Mark a chat unread, pin/unpin it, or hide it only for the caller."""
+        peer = request.args.get('peer', '')
+        try:
+            group_id = int(request.args.get('group_id', '0') or 0)
+        except ValueError:
+            return jsonify({'status': 'error', 'message': 'group_id muss eine Zahl sein.'}), 400
+        action = request.args.get('action', '')
+        with CHAT_WRITE_LOCK, chat_connection() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO chat_conversation_preferences
+                   (username, peer, group_id) VALUES (?, ?, ?)""",
+                (username, peer, group_id),
+            )
+            if action == 'unread':
+                connection.execute(
+                    'UPDATE chat_conversation_preferences SET forced_unread=1 WHERE username=? AND peer=? AND group_id=?',
+                    (username, peer, group_id),
+                )
+            elif action == 'pin':
+                current = connection.execute(
+                    'SELECT pinned_at FROM chat_conversation_preferences WHERE username=? AND peer=? AND group_id=?',
+                    (username, peer, group_id),
+                ).fetchone()
+                connection.execute(
+                    'UPDATE chat_conversation_preferences SET pinned_at=? WHERE username=? AND peer=? AND group_id=?',
+                    (None if current['pinned_at'] else int(time.time_ns()), username, peer, group_id),
+                )
+            elif action == 'delete':
+                maximum = connection.execute('SELECT COALESCE(MAX(id), 0) FROM chat_messages').fetchone()[0]
+                connection.execute(
+                    """INSERT INTO chat_clears VALUES (?, ?, ?, ?)
+                       ON CONFLICT(username, peer, group_id) DO UPDATE SET before_message_id=excluded.before_message_id""",
+                    (username, peer, group_id, maximum),
+                )
+                connection.execute(
+                    'UPDATE chat_conversation_preferences SET hidden=1, pinned_at=NULL WHERE username=? AND peer=? AND group_id=?',
+                    (username, peer, group_id),
+                )
+            else:
+                return jsonify({'status': 'error', 'message': 'action muss unread, pin oder delete sein.'}), 400
+            connection.commit()
+            row = connection.execute(
+                'SELECT * FROM chat_conversation_preferences WHERE username=? AND peer=? AND group_id=?',
+                (username, peer, group_id),
+            ).fetchone()
+        return jsonify({'status': 'ok', 'preference': dict(row)})
+
     @blueprint.get('/chat/info/<username>/<other>')
     def direct_chat_info(username, other):
         """Return links, media, common groups, and block state for a direct chat."""
@@ -707,7 +784,19 @@ def create_chat_blueprint():
                    JOIN chat_uploads AS u ON u.id = p.image_upload_id""",
             ).fetchall()
         profile_images = {row['username']: row['response_id'] for row in profile_rows}
+        with chat_connection() as connection:
+            preference_rows = connection.execute(
+                'SELECT * FROM chat_conversation_preferences WHERE username=?', (username,),
+            ).fetchall()
+        preferences = {(row['peer'], row['group_id']): row for row in preference_rows}
+        visible_conversations = []
         for conversation in conversations:
+            preference_key = ('', conversation['group_id']) if conversation['type'] == 'group' else (
+                conversation['name'], 0
+            )
+            preference = preferences.get(preference_key)
+            if preference and preference['hidden']:
+                continue
             conversation['profile_image'] = profile_images.get(conversation['name'])
             with chat_connection() as connection:
                 if conversation['type'] == 'group':
@@ -731,7 +820,8 @@ def create_chat_blueprint():
                 ).fetchone()[0]
             conversation['last_message'] = (last['content'] if last else None) or ('Anhang' if last else '')
             conversation['last_sender'] = last['sender'] if last else None
-            conversation['unread_count'] = unread
+            conversation['unread_count'] = max(unread, 1 if preference and preference['forced_unread'] else 0)
+            conversation['pinned_at'] = preference['pinned_at'] if preference else None
             if last and last['sender'] == username:
                 with chat_connection() as connection:
                     receipt = connection.execute(
@@ -744,8 +834,17 @@ def create_chat_blueprint():
                 )
             else:
                 conversation['receipt_status'] = None
-        conversations.sort(key=lambda item: (item['last_message_at'], item['last_message_id'] or 0), reverse=True)
-        return jsonify({'status': 'ok', 'chats': conversations})
+            visible_conversations.append(conversation)
+        visible_conversations.sort(
+            key=lambda item: (
+                item['pinned_at'] is not None,
+                item['pinned_at'] or 0,
+                item['last_message_at'],
+                item['last_message_id'] or 0,
+            ),
+            reverse=True,
+        )
+        return jsonify({'status': 'ok', 'chats': visible_conversations})
 
     @blueprint.get('/chat/updates/<username>')
     def chat_updates(username):
@@ -797,8 +896,12 @@ def create_chat_blueprint():
                 )
                 group_id = cursor.lastrowid
                 connection.executemany(
-                    'INSERT INTO chat_group_members (group_id, username, joined_at) VALUES (?, ?, ?)',
-                    [(group_id, member, int(time.time())) for member in sorted(members)],
+                    """INSERT INTO chat_group_members
+                       (group_id, username, joined_at, can_manage_members) VALUES (?, ?, ?, ?)""",
+                    [
+                        (group_id, member, int(time.time()), int(member == creator))
+                        for member in sorted(members)
+                    ],
                 )
                 connection.commit()
         except (ValueError, sqlite3.Error) as error:
@@ -807,7 +910,7 @@ def create_chat_blueprint():
 
     @blueprint.post('/chat/group/<int:group_id>/members')
     def change_group_members(group_id):
-        """Add or remove one group member using action=add/remove."""
+        """Add/remove members or grant/revoke their management permission."""
         action = request.args.get('action', '').lower()
         actor = request.args.get('ersteller', '').strip()
         try:
@@ -816,11 +919,21 @@ def create_chat_blueprint():
                 group = connection.execute('SELECT id, creator FROM chat_groups WHERE id = ?', (group_id,)).fetchone()
                 if group is None:
                     return jsonify({'status': 'error', 'message': 'Gruppe nicht gefunden.'}), 404
-                if actor != group['creator']:
-                    return jsonify({'status': 'error', 'message': 'Nur der Gruppenersteller darf Mitglieder ändern.'}), 403
+                actor_membership = connection.execute(
+                    'SELECT can_manage_members FROM chat_group_members WHERE group_id=? AND username=?',
+                    (group_id, actor),
+                ).fetchone()
+                can_manage = actor == group['creator'] or (
+                    actor_membership and actor_membership['can_manage_members']
+                )
+                if action in {'grant', 'revoke'} and actor != group['creator']:
+                    return jsonify({'status': 'error', 'message': 'Nur der Gruppenersteller darf Rechte vergeben.'}), 403
+                if not can_manage:
+                    return jsonify({'status': 'error', 'message': 'Keine Berechtigung zur Mitgliederverwaltung.'}), 403
                 if action == 'add':
                     connection.execute(
-                        'INSERT OR IGNORE INTO chat_group_members (group_id, username, joined_at) VALUES (?, ?, ?)',
+                        """INSERT OR IGNORE INTO chat_group_members
+                           (group_id, username, joined_at, can_manage_members) VALUES (?, ?, ?, 0)""",
                         (group_id, username, int(time.time())),
                     )
                 elif action == 'remove':
@@ -830,17 +943,34 @@ def create_chat_blueprint():
                         'DELETE FROM chat_group_members WHERE group_id = ? AND username = ?',
                         (group_id, username),
                     )
+                elif action in {'grant', 'revoke'}:
+                    if username == group['creator']:
+                        raise ValueError('Die Rechte des Gruppenerstellers können nicht entzogen werden.')
+                    connection.execute(
+                        'UPDATE chat_group_members SET can_manage_members=? WHERE group_id=? AND username=?',
+                        (int(action == 'grant'), group_id, username),
+                    )
                 else:
-                    raise ValueError('action muss add oder remove sein.')
+                    raise ValueError('action muss add, remove, grant oder revoke sein.')
                 connection.commit()
         except (ValueError, sqlite3.Error) as error:
             return jsonify({'status': 'error', 'message': str(error)}), 400
         return jsonify({'status': 'ok'}), 200
 
-    @blueprint.get('/chat/group/<int:group_id>')
+    @blueprint.route('/chat/group/<int:group_id>', methods=['GET', 'DELETE'])
     def group_details(group_id):
         """Return group metadata and members for every group participant."""
         username = request.args.get('username', '').strip()
+        if request.method == 'DELETE':
+            with CHAT_WRITE_LOCK, chat_connection() as connection:
+                group = connection.execute('SELECT creator FROM chat_groups WHERE id=?', (group_id,)).fetchone()
+                if group is None:
+                    return jsonify({'status': 'error', 'message': 'Gruppe nicht gefunden.'}), 404
+                if username != group['creator']:
+                    return jsonify({'status': 'error', 'message': 'Nur der Gruppenersteller darf die Gruppe löschen.'}), 403
+                connection.execute('DELETE FROM chat_groups WHERE id=?', (group_id,))
+                connection.commit()
+            return jsonify({'status': 'ok'}), 200
         with chat_connection() as connection:
             group = connection.execute('SELECT * FROM chat_groups WHERE id = ?', (group_id,)).fetchone()
             if group is None:
@@ -852,11 +982,18 @@ def create_chat_blueprint():
             if allowed is None:
                 return jsonify({'status': 'error', 'message': 'Benutzer ist kein Gruppenmitglied.'}), 403
             members = connection.execute(
-                'SELECT username FROM chat_group_members WHERE group_id = ? ORDER BY username COLLATE NOCASE',
+                """SELECT username, can_manage_members FROM chat_group_members
+                   WHERE group_id = ? ORDER BY username COLLATE NOCASE""",
                 (group_id,),
             ).fetchall()
         result = dict(group)
         result['mitglieder'] = [row['username'] for row in members]
+        result['mitglied_rechte'] = {
+            row['username']: bool(row['can_manage_members']) for row in members
+        }
+        result['darf_mitglieder_verwalten'] = bool(
+            username == group['creator'] or result['mitglied_rechte'].get(username)
+        )
         return jsonify({'status': 'ok', 'gruppe': result})
 
     @blueprint.post('/chat/group/<int:group_id>/<sender>/<message_type>')
@@ -894,6 +1031,10 @@ def create_chat_blueprint():
                 'UPDATE chat_message_receipts SET delivered_at=COALESCE(delivered_at, ?), read_at=? WHERE message_id=? AND username=?',
                 [(int(time.time()), int(time.time()), row['id'], user_one) for row in rows],
             )
+            connection.execute(
+                'UPDATE chat_conversation_preferences SET forced_unread=0 WHERE username=? AND peer=? AND group_id=0',
+                (user_one, user_two),
+            )
             connection.commit()
         return jsonify({'status': 'ok', 'nachrichten': [serialize_message(row) for row in rows]})
 
@@ -916,6 +1057,10 @@ def create_chat_blueprint():
                 connection.executemany(
                     'UPDATE chat_message_receipts SET delivered_at=COALESCE(delivered_at, ?), read_at=? WHERE message_id=? AND username=?',
                     [(int(time.time()), int(time.time()), row['id'], viewer) for row in rows],
+                )
+                connection.execute(
+                    'UPDATE chat_conversation_preferences SET forced_unread=0 WHERE username=? AND peer=? AND group_id=?',
+                    (viewer, '', group_id),
                 )
                 connection.commit()
         return jsonify({'status': 'ok', 'nachrichten': [serialize_message(row) for row in rows]})
