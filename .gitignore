@@ -1,0 +1,6 @@
+/db_bak/
+/chat.db
+/chat_uploads/
+/log/
+/oauth2_gateway.db
+/__pycache__/
