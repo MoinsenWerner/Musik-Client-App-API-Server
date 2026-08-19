@@ -7,7 +7,8 @@ import threading
 import time
 from contextlib import contextmanager
 
-from flask import Blueprint, Flask, jsonify, request, send_from_directory
+import requests
+from flask import Blueprint, Flask, jsonify, render_template, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -24,6 +25,9 @@ MESSAGE_TYPES = {
     'text-mit-datei',
 }
 IMAGE_EXTENSIONS = {'.avif', '.gif', '.jpeg', '.jpg', '.png', '.webp'}
+OPENAI_API_URL = 'https://api.openai.com/v1/responses'
+OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-5')
+OPENAI_HISTORY_LIMIT = 40
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chat_uploads (
@@ -70,6 +74,16 @@ CREATE INDEX IF NOT EXISTS idx_chat_direct
     ON chat_messages(sender, recipient, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_chat_group
     ON chat_messages(group_id, created_at, id);
+CREATE TABLE IF NOT EXISTS chatgpt_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    openai_response_id TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chatgpt_user
+    ON chatgpt_messages(username, created_at, id);
 """
 
 
@@ -202,8 +216,40 @@ def pagination_values():
     return limit, offset
 
 
+def extract_openai_text(response_data):
+    """Extract text content from a raw OpenAI Responses API response."""
+    texts = []
+    for output in response_data.get('output', []):
+        if output.get('type') != 'message':
+            continue
+        for content in output.get('content', []):
+            if content.get('type') == 'output_text' and content.get('text'):
+                texts.append(content['text'])
+    return '\n'.join(texts).strip()
+
+
+def chatgpt_history_rows(username, limit=None, offset=0):
+    parameters = [username]
+    pagination = ''
+    if limit is not None:
+        pagination = ' LIMIT ? OFFSET ?'
+        parameters.extend((limit, offset))
+    with chat_connection() as connection:
+        return connection.execute(
+            """SELECT id, username, role, content, openai_response_id, created_at
+               FROM chatgpt_messages WHERE username = ?
+               ORDER BY created_at ASC, id ASC""" + pagination,
+            parameters,
+        ).fetchall()
+
+
 def create_chat_blueprint():
     blueprint = Blueprint('chat', __name__)
+
+    @blueprint.get('/webchat')
+    def webchat():
+        """Render the browser chat client with a client-credential login overlay."""
+        return render_template('webchat.html')
 
     @blueprint.post('/chat/upload/<kind>')
     def upload_chat_media(kind):
@@ -398,6 +444,108 @@ def create_chat_blueprint():
         """Return every attachment assigned to a group chat."""
         return media_response('m.group_id = ?', (group_id,))
 
+    @blueprint.post('/chat/gpt/<username>')
+    def send_chatgpt_message(username):
+        """Send a prompt to OpenAI while preserving per-user conversation history."""
+        api_key = os.environ.get('OPENAI_API_KEY', '').strip()
+        prompt = request.args.get('inhalt', '').strip()
+        try:
+            username = clean_identity(username, 'username')
+        except ValueError as error:
+            return jsonify({'status': 'error', 'message': str(error)}), 400
+        if not prompt:
+            return jsonify({'status': 'error', 'message': 'inhalt ist erforderlich.'}), 400
+        if not api_key:
+            return jsonify({
+                'status': 'error',
+                'error': 'openai_not_configured',
+                'message': 'OPENAI_API_KEY ist auf dem Server nicht gesetzt.',
+            }), 503
+
+        with CHAT_WRITE_LOCK:
+            history = chatgpt_history_rows(username)
+            input_messages = [
+                {'role': row['role'], 'content': row['content']}
+                for row in history[-OPENAI_HISTORY_LIMIT:]
+            ]
+            input_messages.append({'role': 'user', 'content': prompt})
+            try:
+                openai_response = requests.post(
+                    OPENAI_API_URL,
+                    headers={
+                        'Authorization': f'Bearer {api_key}',
+                        'Content-Type': 'application/json',
+                    },
+                    json={
+                        'model': OPENAI_MODEL,
+                        'input': input_messages,
+                    },
+                    timeout=60,
+                )
+            except requests.RequestException as error:
+                return jsonify({'status': 'error', 'error': 'openai_unavailable', 'message': str(error)}), 502
+            if not openai_response.ok:
+                return jsonify({
+                    'status': 'error',
+                    'error': 'openai_error',
+                    'upstream_status': openai_response.status_code,
+                    'message': openai_response.text[:2000],
+                }), 502
+            response_data = openai_response.json()
+            answer = extract_openai_text(response_data)
+            if not answer:
+                return jsonify({
+                    'status': 'error',
+                    'error': 'empty_openai_response',
+                    'message': 'OpenAI hat keine Textantwort geliefert.',
+                }), 502
+            created_at = int(time.time())
+            with chat_connection() as connection:
+                connection.execute(
+                    """INSERT INTO chatgpt_messages
+                       (username, role, content, openai_response_id, created_at)
+                       VALUES (?, 'user', ?, NULL, ?)""",
+                    (username, prompt, created_at),
+                )
+                cursor = connection.execute(
+                    """INSERT INTO chatgpt_messages
+                       (username, role, content, openai_response_id, created_at)
+                       VALUES (?, 'assistant', ?, ?, ?)""",
+                    (username, answer, response_data.get('id'), created_at),
+                )
+                connection.commit()
+        return jsonify({
+            'status': 'ok',
+            'message_id': cursor.lastrowid,
+            'antwort': answer,
+            'model': response_data.get('model', OPENAI_MODEL),
+        }), 201
+
+    @blueprint.get('/chat/gpt/<username>/history')
+    def get_chatgpt_history(username):
+        """Return the persistent ChatGPT conversation history for one user."""
+        try:
+            username = clean_identity(username, 'username')
+            limit, offset = pagination_values()
+        except ValueError as error:
+            return jsonify({'status': 'error', 'message': str(error)}), 400
+        rows = chatgpt_history_rows(username, limit, offset)
+        return jsonify({'status': 'ok', 'nachrichten': [dict(row) for row in rows]})
+
+    @blueprint.delete('/chat/gpt/<username>/history')
+    def delete_chatgpt_history(username):
+        """Delete the remembered ChatGPT conversation for one user."""
+        try:
+            username = clean_identity(username, 'username')
+        except ValueError as error:
+            return jsonify({'status': 'error', 'message': str(error)}), 400
+        with CHAT_WRITE_LOCK, chat_connection() as connection:
+            cursor = connection.execute(
+                'DELETE FROM chatgpt_messages WHERE username = ?', (username,),
+            )
+            connection.commit()
+        return jsonify({'status': 'ok', 'geloeschte_nachrichten': cursor.rowcount})
+
     return blueprint
 
 
@@ -411,6 +559,14 @@ def create_standalone_app():
     """Create an app exposing only the chat API for standalone operation."""
     standalone_app = Flask(__name__)
     register_chat_routes(standalone_app)
+
+    @standalone_app.post('/token')
+    def standalone_token_unavailable():
+        return jsonify({
+            'error': 'standalone_mode',
+            'message': 'Die Client-Anmeldung ist nur in der vollständigen servus.py-App verfügbar.',
+        }), 503
+
     return standalone_app
 
 

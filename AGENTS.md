@@ -17,7 +17,8 @@ This repository contains a single-process Flask application named **Musik-Client
 9. playlist-content storage, pagination, retrieval, and Spotify playback;
 10. Core-Data report ingestion/download;
 11. a self-documenting route browser; and
-12. automatic SQLite backups after successful SQLAlchemy commits, with an optional Git push.
+12. automatic SQLite backups after successful SQLAlchemy commits, with an optional Git push; and
+13. a browser webchat plus persistent per-user communication with OpenAI's Responses API.
 
 Most Python behavior is in `servus.py`; the independently runnable chat subsystem is in `chat.py`. There is no migration framework, test suite, dependency manifest, container definition, or production WSGI configuration checked in. Both development entry points listen on `0.0.0.0:2050` with Flask debug mode enabled; only one can bind that port at a time.
 
@@ -38,6 +39,7 @@ Most Python behavior is in `servus.py`; the independently runnable chat subsyste
 - `templates/notify_add.html`: notification creation form; notification text is a multiline `textarea`.
 - `templates/notify_edit.html`: list/edit/delete UI for stored notifications.
 - `templates/routes.html`: searchable/filterable route documentation. It supports filters for browser compatibility, GET, POST, and authentication and shows collapsible fixed-path groups and parameter metadata.
+- `templates/webchat.html`: authenticated browser client for direct/self/group chats, uploads, media browsing, and per-user ChatGPT conversations.
 
 ### Version and downloadable content
 
@@ -105,6 +107,8 @@ Configuration is currently hard-coded near the top/middle of `servus.py` rather 
 - Gateway backend URLs: the three entries in `TARGET_BACKENDS`.
 - Allowed client OAuth redirects: `ALLOWED_REDIRECT_URIS`.
 - Flask secret key: randomly generated on each process start, so flash/session continuity does not survive restarts.
+- OpenAI API key: environment variable `OPENAI_API_KEY`; required only for `/chat/gpt/*`.
+- OpenAI model: environment variable `OPENAI_MODEL`, defaulting to `gpt-5`.
 
 Treat the database and backups as highly sensitive: they may contain plain client secrets, gateway tokens, Spotify refresh/access tokens, positions, notifications, and reports. The dashboard itself has no login guard, client deletion uses GET, and the notification/APK management pages have no authorization guard. Preserve compatibility when changing these behaviors, but flag them as security concerns rather than assuming they are intentional best practices.
 
@@ -127,7 +131,7 @@ SQLAlchemy uses one SQLite database. Current tables/models are:
 - `playing_playlist`: singleton-like row (`id=1`) pointing at the last playlist successfully started through this API.
 - `user_positions`: dynamically declared coordinate/time/date/map-link columns based on constants.
 
-The separate `chat.db`, managed directly with `sqlite3` by `chat.py`, contains `chat_uploads`, `chat_groups`, `chat_group_members`, and `chat_messages`. Attachment bytes live in `chat_uploads/`; their metadata and associations live in `chat.db`. Foreign keys connect messages to group and upload rows. Direct messages store a recipient, while group messages store a group ID.
+The separate `chat.db`, managed directly with `sqlite3` by `chat.py`, contains `chat_uploads`, `chat_groups`, `chat_group_members`, `chat_messages`, and `chatgpt_messages`. Attachment bytes live in `chat_uploads/`; their metadata and associations live in `chat.db`. Foreign keys connect messages to group and upload rows. Direct messages store a recipient, while group messages store a group ID. ChatGPT prompts and answers are stored per username so later model requests can include that user's prior messages.
 
 Startup calls `db.create_all()` and performs manual `ALTER TABLE` compatibility additions for `client_credentials.token_lifetime_seconds` and `playlist_contents.creator`. There is no Alembic migration history.
 
@@ -259,6 +263,7 @@ All functional player/queue routes below require the gateway Bearer token becaus
 
 The chat API is registered automatically in the main app and is also independently runnable with `python3 chat.py`. It uses `chat.db`, not `oauth2_gateway.db`. Chat routes currently have no bearer-token authentication, so deployment-level access control is important.
 
+- **GET `/webchat`** — Renders the complete browser chat UI. A blocking login overlay exchanges gateway client credentials at `/token`; after successful login the UI exposes direct/self/group messages, group membership, uploads, media, histories, and ChatGPT. In standalone `chat.py` mode, `/token` deliberately returns 503 because gateway clients live in the main database, so the authenticated UI requires `servus.py`.
 - **POST `/chat/upload/<kind>`** — Uploads multipart field `upload` before sending a message. `kind` is `bild` or `datei`; optional form field `sender` records who uploaded it. Images are restricted to AVIF, GIF, JPEG/JPG, PNG, or WebP. The file is streamed to `chat_uploads/`, metadata is stored in `chat.db`, and HTTP 201 JSON returns `upload_response_id`.
 - **GET `/chat/upload/<response_id>`** — Downloads an uploaded attachment using its opaque upload response ID and original filename.
 - **POST `/chat/<sender>/<recipient>/<message_type>`** — Sends a direct message; sender and recipient may be identical for a self-chat. Valid types are `picture`, `text`, `text-mit-link`, `link`, `datei`, `text-mit-bild`, and `text-mit-datei`. Query `inhalt` is required for text/link types, `datei-upload` is required for file types, and `bild-upload` is required for image types. Attachment values must be response IDs returned by the matching upload route. Returns HTTP 201 JSON with `message_id`.
@@ -270,6 +275,9 @@ The chat API is registered automatically in the main app and is also independent
 - **GET `/chat/group/<int:group_id>/history`** — Returns chronological group history with the same optional pagination.
 - **GET `/chat/media/<user_one>/<user_two>`** — Returns all distinct files/images assigned to the direct/self chat, oldest first, with metadata and download URLs.
 - **GET `/chat/group/<int:group_id>/media`** — Returns all distinct attachments assigned to the group chat.
+- **POST `/chat/gpt/<username>`** — Required query `inhalt`. Sends the latest 40 stored user/assistant messages plus the new prompt to OpenAI's Responses API using server environment variable `OPENAI_API_KEY` and model `OPENAI_MODEL` (default `gpt-5`). On success, stores both prompt and answer in `chatgpt_messages` and returns the answer. Missing configuration returns 503; upstream failures return 502.
+- **GET `/chat/gpt/<username>/history`** — Returns the persistent per-user ChatGPT conversation with optional `limit` and `offset`.
+- **DELETE `/chat/gpt/<username>/history`** — Deletes every remembered ChatGPT prompt and answer for the specified username.
 
 ## 8. Response conventions and notable quirks
 

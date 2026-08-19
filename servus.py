@@ -2465,6 +2465,8 @@ ROUTE_PARAMETER_OVERRIDES = {
     ],
     'chat.direct_history': [('query', 'limit', False), ('query', 'offset', False)],
     'chat.group_history': [('query', 'limit', False), ('query', 'offset', False)],
+    'chat.send_chatgpt_message': [('query', 'inhalt', True)],
+    'chat.get_chatgpt_history': [('query', 'limit', False), ('query', 'offset', False)],
 }
 
 
