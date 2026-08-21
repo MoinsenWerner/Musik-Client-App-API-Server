@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager
 
 import requests
-from flask import Blueprint, Flask, current_app, jsonify, render_template, request, send_from_directory
+from flask import Blueprint, Flask, current_app, jsonify, redirect, render_template, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -96,6 +96,19 @@ CREATE TABLE IF NOT EXISTS chat_conversation_preferences (
     forced_unread INTEGER NOT NULL DEFAULT 0,
     hidden INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (username, peer, group_id)
+);
+CREATE TABLE IF NOT EXISTS chat_spotify_tokens (
+    username TEXT PRIMARY KEY,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    expires_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chat_spotify_oauth_states (
+    state TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS chat_message_receipts (
     message_id INTEGER NOT NULL,
@@ -416,6 +429,63 @@ def chatgpt_history_rows(username, limit=None, offset=0):
         ).fetchall()
 
 
+def spotify_app_credentials():
+    """Read the configured Spotify application credentials from the main database."""
+    extension = current_app.extensions.get('sqlalchemy')
+    if extension is None:
+        return None, None
+    with extension.engine.connect() as connection:
+        row = connection.exec_driver_sql(
+            'SELECT spotify_client_id, spotify_client_secret FROM system_config ORDER BY id LIMIT 1',
+        ).mappings().first()
+    return (row['spotify_client_id'], row['spotify_client_secret']) if row else (None, None)
+
+
+def spotify_token_for_user(username):
+    """Return a supplied WebView token or a stored/refreshed user token."""
+    supplied = request.headers.get('X-Spotify-Authorization', '')
+    if supplied.lower().startswith('bearer '):
+        return supplied[7:].strip()
+    with chat_connection() as connection:
+        row = connection.execute(
+            'SELECT * FROM chat_spotify_tokens WHERE username=?', (username,),
+        ).fetchone()
+    if row is None:
+        return None
+    if row['expires_at'] > int(time.time()) + 30:
+        return row['access_token']
+    client_id, client_secret = spotify_app_credentials()
+    if not row['refresh_token'] or not client_id or not client_secret:
+        return None
+    response = requests.post(
+        'https://accounts.spotify.com/api/token',
+        data={'grant_type': 'refresh_token', 'refresh_token': row['refresh_token']},
+        auth=(client_id, client_secret), timeout=10,
+    )
+    if not response.ok:
+        return None
+    payload = response.json()
+    with CHAT_WRITE_LOCK, chat_connection() as connection:
+        connection.execute(
+            """UPDATE chat_spotify_tokens SET access_token=?, refresh_token=?, expires_at=?, updated_at=?
+               WHERE username=?""",
+            (payload['access_token'], payload.get('refresh_token') or row['refresh_token'],
+             int(time.time()) + payload.get('expires_in', 3600), int(time.time()), username),
+        )
+        connection.commit()
+    return payload['access_token']
+
+
+def spotify_get(path, token, params=None):
+    response = requests.get(
+        f'https://api.spotify.com/v1/{path.lstrip("/")}',
+        headers={'Authorization': f'Bearer {token}'}, params=params, timeout=10,
+    )
+    if not response.ok:
+        raise ValueError(f'Spotify antwortete mit HTTP {response.status_code}.')
+    return response.json()
+
+
 def create_chat_blueprint():
     blueprint = Blueprint('chat', __name__)
 
@@ -550,16 +620,16 @@ def create_chat_blueprint():
 
     @blueprint.get('/chat/share/playlists/<username>')
     def shareable_playlists(username):
-        """Return server and user-created playlists with songs for the share picker."""
+        """Return server playlists and the user's Spotify playlists for sharing."""
         sqlalchemy_extension = current_app.extensions.get('sqlalchemy')
-        if sqlalchemy_extension is None:
-            return jsonify({'status': 'ok', 'server_playlists': [], 'eigene_playlists': []})
-        with sqlalchemy_extension.engine.connect() as connection:
-            rows = connection.exec_driver_sql(
-                """SELECT name, playlist_id AS spotify_playlist_id, song_names, song_ids,
-                          image_links AS image_urls, creator
-                   FROM playlist_contents ORDER BY created_at, id""",
-            ).mappings().all()
+        rows = []
+        if sqlalchemy_extension is not None:
+            with sqlalchemy_extension.engine.connect() as connection:
+                rows = connection.exec_driver_sql(
+                    """SELECT name, playlist_id AS spotify_playlist_id, song_names, song_ids,
+                              image_links AS image_urls, creator
+                       FROM playlist_contents ORDER BY created_at, id""",
+                ).mappings().all()
         playlists = []
         for row in rows:
             playlist = dict(row)
@@ -570,8 +640,106 @@ def create_chat_blueprint():
                 )
             ]
             playlists.append(playlist)
-        own = [item for item in playlists if (item['creator'] or 'Admin').casefold() == username.casefold()]
-        return jsonify({'status': 'ok', 'server_playlists': playlists, 'eigene_playlists': own})
+        spotify_token = spotify_token_for_user(username)
+        own = []
+        if spotify_token:
+            try:
+                url = 'me/playlists'
+                params = {'limit': 50}
+                while url:
+                    payload = spotify_get(url, spotify_token, params)
+                    own.extend({
+                        'name': item['name'], 'spotify_playlist_id': item['id'], 'songs': [],
+                    } for item in payload.get('items', []) if item)
+                    next_url = payload.get('next')
+                    url = next_url.split('/v1/', 1)[1] if next_url and '/v1/' in next_url else None
+                    params = None
+            except ValueError as error:
+                return jsonify({'status': 'error', 'message': str(error)}), 502
+        return jsonify({
+            'status': 'ok', 'server_playlists': playlists, 'eigene_playlists': own,
+            'spotify_connected': bool(spotify_token),
+            'spotify_connect_url': f'/chat/spotify/connect/{username}',
+        })
+
+    @blueprint.get('/chat/spotify/playlist/<playlist_id>/tracks')
+    def spotify_playlist_tracks(playlist_id):
+        username = request.args.get('username', '').strip()
+        token = spotify_token_for_user(username)
+        if not token:
+            return jsonify({'status': 'error', 'message': 'Spotify-Konto ist nicht verbunden.'}), 401
+        try:
+            url = f'playlists/{playlist_id}/tracks'
+            params = {'limit': 100}
+            items = []
+            while url:
+                payload = spotify_get(url, token, params)
+                items.extend(payload.get('items', []))
+                next_url = payload.get('next')
+                url = next_url.split('/v1/', 1)[1] if next_url and '/v1/' in next_url else None
+                params = None
+        except ValueError as error:
+            return jsonify({'status': 'error', 'message': str(error)}), 502
+        songs = []
+        for item in items:
+            track = item.get('track') or {}
+            songs.append({'name': track.get('name', ''), 'id': track.get('id', ''),
+                          'image': ((track.get('album') or {}).get('images') or [{}])[0].get('url', '')})
+        return jsonify({'status': 'ok', 'songs': songs})
+
+    @blueprint.get('/chat/spotify/connect/<username>')
+    def connect_chat_spotify(username):
+        client_id, client_secret = spotify_app_credentials()
+        if not client_id or not client_secret:
+            return jsonify({'status': 'error', 'message': 'Spotify Client-ID/Secret fehlen.'}), 503
+        state = secrets.token_urlsafe(32)
+        redirect_uri = os.environ.get(
+            'CHAT_SPOTIFY_REDIRECT_URI', request.url_root.rstrip('/') + '/chat/spotify/callback',
+        )
+        with CHAT_WRITE_LOCK, chat_connection() as connection:
+            connection.execute(
+                'INSERT INTO chat_spotify_oauth_states VALUES (?, ?, ?, ?)',
+                (state, username, redirect_uri, int(time.time())),
+            )
+            connection.commit()
+        from urllib.parse import urlencode
+        return redirect('https://accounts.spotify.com/authorize?' + urlencode({
+            'client_id': client_id, 'response_type': 'code', 'redirect_uri': redirect_uri,
+            'scope': 'playlist-read-private playlist-read-collaborative', 'state': state,
+        }))
+
+    @blueprint.get('/chat/spotify/callback')
+    def chat_spotify_callback():
+        state = request.args.get('state', '')
+        with CHAT_WRITE_LOCK, chat_connection() as connection:
+            saved = connection.execute(
+                'SELECT * FROM chat_spotify_oauth_states WHERE state=?', (state,),
+            ).fetchone()
+            connection.execute('DELETE FROM chat_spotify_oauth_states WHERE state=?', (state,))
+            connection.commit()
+        if saved is None or saved['created_at'] < int(time.time()) - 600:
+            return 'Ungültiger oder abgelaufener Spotify-Status.', 400
+        client_id, client_secret = spotify_app_credentials()
+        response = requests.post(
+            'https://accounts.spotify.com/api/token',
+            data={'grant_type': 'authorization_code', 'code': request.args.get('code', ''),
+                  'redirect_uri': saved['redirect_uri']},
+            auth=(client_id, client_secret), timeout=10,
+        )
+        if not response.ok:
+            return 'Spotify-Verknüpfung fehlgeschlagen.', 502
+        payload = response.json()
+        with CHAT_WRITE_LOCK, chat_connection() as connection:
+            connection.execute(
+                """INSERT INTO chat_spotify_tokens VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(username) DO UPDATE SET access_token=excluded.access_token,
+                   refresh_token=excluded.refresh_token, expires_at=excluded.expires_at,
+                   updated_at=excluded.updated_at""",
+                (saved['username'], payload['access_token'], payload.get('refresh_token'),
+                 int(time.time()) + payload.get('expires_in', 3600), int(time.time())),
+            )
+            connection.commit()
+        return '<!doctype html><meta charset="utf-8"><p>Spotify wurde verbunden. Dieses Fenster kann geschlossen werden.</p><script>window.opener?.postMessage("spotify-connected", location.origin);window.close()</script>'
 
     @blueprint.route('/chat/settings/<username>', methods=['GET', 'POST'])
     def chat_settings(username):
