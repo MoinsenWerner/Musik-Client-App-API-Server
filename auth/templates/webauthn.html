@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="de">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tasker Passkey</title>
+<body>
+<main>
+<h1>{{ "Passkey erstellen" if mode == "register" else "Zugangsdaten abrufen" }}</h1>
+<form id="input-form">
+  <label>Benutzername <input id="username" autocomplete="username" value="{{ username }}" required></label>
+  {% if mode == "register" %}
+  <label>Passwort <input id="password" type="password" autocomplete="new-password" value="{{ password }}" required></label>
+  <label>Passkey-Typ
+    <select id="passkey-type">
+      <option value="fingerprint" {{ "selected" if passkey_type == "fingerprint" }}>Fingerprint / Geräte-PIN</option>
+      <option value="fido" {{ "selected" if passkey_type == "fido" }}>FIDO-Hardware-Key</option>
+    </select>
+  </label>
+  {% endif %}
+  <button type="submit">{{ "Erstellen" if mode == "register" else "Authentifizieren" }}</button>
+</form>
+<p id="status">Bitte Daten eingeben.</p>
+<pre id="result"></pre>
+</main>
+<script>
+const initial = {{ {"mode": mode, "username": username, "password": password, "type": passkey_type}|tojson }};
+const decode = value => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((value.length + 3) % 4)), c => c.charCodeAt(0));
+const encode = value => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const jsonify = (credential, register) => {
+  const response = {clientDataJSON: encode(credential.response.clientDataJSON)};
+  if (register) {
+    response.attestationObject = encode(credential.response.attestationObject);
+    if (credential.response.getTransports) response.transports = credential.response.getTransports();
+  } else {
+    response.authenticatorData = encode(credential.response.authenticatorData);
+    response.signature = encode(credential.response.signature);
+    response.userHandle = credential.response.userHandle ? encode(credential.response.userHandle) : null;
+  }
+  return {id: credential.id, rawId: encode(credential.rawId), type: credential.type, response};
+};
+async function run() {
+  const register = initial.mode === 'register';
+  const prefix = register ? 'register' : 'authenticate';
+  const username = document.querySelector('#username').value.trim();
+  const body = register ? {
+    username,
+    password: document.querySelector('#password').value,
+    type: document.querySelector('#passkey-type').value
+  } : {username};
+  document.querySelector('#status').textContent = 'Authentifizierung wird gestartet …';
+  const optionResponse = await fetch(`/api/${prefix}/options`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const options = await optionResponse.json();
+  if (!optionResponse.ok) throw new Error(options.error);
+  options.challenge = decode(options.challenge);
+  if (register) {
+    options.user.id = decode(options.user.id);
+    (options.excludeCredentials || []).forEach(item => item.id = decode(item.id));
+  } else (options.allowCredentials || []).forEach(item => item.id = decode(item.id));
+  const credential = register ? await navigator.credentials.create({publicKey: options}) : await navigator.credentials.get({publicKey: options});
+  const response = await fetch(`/api/${prefix}/verify`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(jsonify(credential, register))});
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error);
+  document.querySelector('#status').textContent = 'Erfolgreich';
+  document.querySelector('#result').textContent = JSON.stringify(result);
+}
+const start = () => run().catch(error => document.querySelector('#status').textContent = `Fehler: ${error.message}`);
+document.querySelector('#input-form').addEventListener('submit', event => { event.preventDefault(); start(); });
+if (initial.username && (initial.mode !== 'register' || initial.password)) start();
+</script>
+</body>
+</html>
