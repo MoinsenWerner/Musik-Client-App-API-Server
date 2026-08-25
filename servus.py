@@ -22,14 +22,37 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import glob
 from packaging.version import parse as parse_version
 from werkzeug.utils import safe_join, secure_filename
+from auth.app import app as auth_app
 from chat import register_chat_routes
 
 UPDATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "updates")
 os.makedirs(UPDATES_DIR, exist_ok=True)
 
 
+class AuthRoutingMiddleware:
+    """Serve the passkey vault and gateway through the same WSGI listener."""
+
+    AUTH_PATHS = {'/health', '/register', '/get'}
+
+    def __init__(self, main_application, authentication_application):
+        self.main_application = main_application
+        self.authentication_application = authentication_application
+
+    def __call__(self, environ, start_response):
+        path = environ.get('PATH_INFO', '')
+        if path == '/auth' or path.startswith('/auth/'):
+            auth_environ = environ.copy()
+            auth_environ['SCRIPT_NAME'] = environ.get('SCRIPT_NAME', '') + '/auth'
+            auth_environ['PATH_INFO'] = path[5:] or '/'
+            return self.authentication_application(auth_environ, start_response)
+        if path in self.AUTH_PATHS or path.startswith('/api/register/') or path.startswith('/api/authenticate/'):
+            return self.authentication_application(environ, start_response)
+        return self.main_application(environ, start_response)
+
+
 app = Flask(__name__)
 register_chat_routes(app)
+app.wsgi_app = AuthRoutingMiddleware(app.wsgi_app, auth_app.wsgi_app)
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DATABASE_FILE = os.path.join(BASE_DIR, 'oauth2_gateway.db')
 DB_BACKUP_FOLDER = os.path.join(BASE_DIR, 'db_bak')

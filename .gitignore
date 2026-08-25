@@ -4,3 +4,11 @@
 /log/
 /oauth2_gateway.db
 /__pycache__/
+/auth/vault.db
+/auth/__pycache__/
+/.pytest_cache/
+/.ruff_cache/
+/auth/.pytest_cache/
+/auth/.ruff_cache/
+
+__pycache__/

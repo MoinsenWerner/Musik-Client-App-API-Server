@@ -59,10 +59,6 @@ Most Python behavior is in `servus.py`; the independently runnable chat subsyste
 - `chat.db`: separate SQLite database containing chat messages, groups, memberships, and attachment metadata.
 - `chat_uploads/`: uploaded chat files and images; opaque response IDs form the stored filenames.
 
-Do not commit runtime databases, logs, uploaded APKs, credentials, or backup clones. The main databases, chat uploads, logs, backups, and Python bytecode are ignored, but still inspect `git status` carefully for other generated files.
-
-## 3. Runtime dependencies and operation
-
 The imports imply these non-stdlib dependencies:
 
 ```text
@@ -77,7 +73,7 @@ SQLAlchemy (installed transitively by Flask-SQLAlchemy)
 A typical development setup is:
 
 ```bash
-python3 -m pip install Flask Flask-SQLAlchemy requests packaging Werkzeug ruff
+python3 -m pip install Flask Flask-SQLAlchemy requests packaging Werkzeug cryptography webauthn ruff
 DB_BACKUP_GIT_ENABLED=0 python3 servus.py
 ```
 
@@ -88,6 +84,7 @@ For code changes, run at least:
 ```bash
 python3 -m py_compile servus.py
 python3 -m py_compile chat.py
+python3 -m py_compile auth/app.py
 python3 -m ruff check servus.py chat.py
 git diff --check
 ```
@@ -258,6 +255,19 @@ All functional player/queue routes below require the gateway Bearer token becaus
 ### Route discovery
 
 - **GET `/routes`** — Dynamically enumerates Flask's URL map, so future routes appear automatically. Default representation depends on the `Accept` header: browsers receive `templates/routes.html`; other clients receive semicolon-separated route paths. Query `format=html` or `format=text` overrides negotiation. Python AST inspection discovers path/query/form/file parameters and augments known routes with manual metadata. The HTML UI offers live search, filters, parameter explanations, and collapsible fixed-route groupings.
+
+### Passkey vault (`auth/`)
+
+The auth Flask application is routed by `AuthRoutingMiddleware` through the same `0.0.0.0:2050` listener as the main application. Its original routes remain available at `/health`, `/register`, `/get`, and `/api/...`; the complete application is also available below `/auth` (for example `/auth/register`). The `/auth` mount uses `SCRIPT_NAME`, and its template builds API requests from that prefix. Running `python3 auth/app.py` starts only the auth application on port 2050.
+
+- **GET `/health`** — Returns WebAuthn origin, relying-party ID, and `status: ok` as JSON.
+- **GET `/register`** and **GET `/get`** — Render the browser WebAuthn registration and credential-retrieval UI. `/register` accepts optional `username`, `password`, and `type=fido|fingerprint`; `/get` accepts optional `username`.
+- **POST `/api/register/options`** — Accepts JSON `username`, `password`, and `type`; encrypts the password into short-lived session state and returns WebAuthn registration options.
+- **POST `/api/register/verify`** — Verifies the registration response and stores the encrypted password and public-key credential in `auth/vault.db`.
+- **POST `/api/authenticate/options`** — Accepts JSON `username` and returns WebAuthn authentication options for the stored credential.
+- **POST `/api/authenticate/verify`** — Verifies the assertion, updates the signature counter, decrypts the stored password, and returns `username` and `password` as JSON.
+
+The same routes below `/auth` are `/auth/health`, `/auth/register`, `/auth/get`, and `/auth/api/...`. WebAuthn requires a stable `VAULT_KEY`, `SECRET_KEY`, `RP_ID`, and public HTTPS `ORIGIN`; use `source auth/set-secrets.sh`. The configured origin is an origin only (scheme/host/port), so mounting below `/auth` does not change it.
 
 ### Chat subsystem
 

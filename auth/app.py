@@ -41,7 +41,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         DATABASE=os.getenv("DATABASE", str(Path(__file__).with_name("vault.db"))),
         RP_ID=os.getenv("RP_ID", "localhost"),
         RP_NAME=os.getenv("RP_NAME", "Tasker Passkey Vault"),
-        ORIGIN=os.getenv("ORIGIN", "http://localhost:4099"),
+        ORIGIN=os.getenv("ORIGIN", "http://localhost:2050"),
         VAULT_KEY=os.getenv("VAULT_KEY"),
         CHALLENGE_TTL=300,
     )
@@ -245,4 +245,4 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=4099)
+    app.run(host="0.0.0.0", port=2050)

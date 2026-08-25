@@ -2,7 +2,7 @@
 
 Dieser Flask-Dienst speichert Zugangsdaten verschlüsselt und gibt sie erst nach
 einer erfolgreichen WebAuthn-Authentifizierung zurück. Er lauscht standardmäßig
-auf `0.0.0.0:4099`.
+auf `0.0.0.0:2050`.
 
 > **Wichtige Plattformgrenze:** Eine reine Tasker-HTTP-Aktion kann kein
 > Fingerabdruck-/PIN-/FIDO-Fenster öffnen. WebAuthn darf nur in einem sicheren
@@ -28,7 +28,7 @@ damit die exportierten Variablen anschließend für Flask verfügbar sind.
 
 ### Cloudflare Tunnel für `auth.extrahelden.de`
 
-Der Tunnel darf intern weiterhin auf `http://localhost:4099` zeigen. Nach außen
+Der Tunnel darf intern weiterhin auf `http://localhost:2050` zeigen. Nach außen
 entscheidend ist ausschließlich die HTTPS-Adresse. Für den genannten Tunnel
 müssen diese Werte gelten (sie sind die Vorgaben im Setup-Skript):
 
@@ -55,9 +55,9 @@ entschlüsselt werden.
 ## Aufrufe
 
 * Registrierung (kompatibel zur gewünschten URL):
-  `https://example.local:4099/register?username=max&password=geheim&create-passkey&type=fido`
+  `https://example.local:2050/register?username=max&password=geheim&create-passkey&type=fido`
 * Plattform-Passkey (Fingerabdruck/PIN): `type=fingerprint`
-* Abruf: `https://example.local:4099/get?username=max`
+* Abruf: `https://example.local:2050/get?username=max`
 
 Beide Seiten können auch ganz ohne URL-Parameter geöffnet werden. In diesem Fall
 erscheint ein verständliches Formular für Benutzername, Passwort und Passkey-Typ

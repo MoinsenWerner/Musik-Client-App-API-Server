@@ -18,7 +18,7 @@ def test_health(tmp_path):
     response = app.test_client().get("/health")
     assert response.status_code == 200
     assert response.json == {
-        "origin": "http://localhost:4099",
+        "origin": "http://localhost:2050",
         "rp_id": "localhost",
         "status": "ok",
     }
