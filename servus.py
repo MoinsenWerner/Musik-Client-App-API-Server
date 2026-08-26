@@ -1044,7 +1044,7 @@ ALLOWED_REDIRECT_URIS = [
     "http://100.115.184.104:8020",
     "http://127.0.0.1:8020",
     "http://37.44.215.123:8020",
-    "https://client.extrahelden.de/auth/callback"
+    "https://client.cube-kingdom.de/auth/callback"
 ]
 
 ROLE_SCOPES = {
@@ -1052,7 +1052,7 @@ ROLE_SCOPES = {
     'Client': ['client', 'hcb-client']
 }
 
-SPOTIFY_FIXED_REDIRECT_URI = "https://api.extrahelden.de/callback"
+SPOTIFY_FIXED_REDIRECT_URI = "https://api.cube-kingdom.de/callback"
 
 SPOTIFY_SCOPES = (
     "user-modify-playback-state "
