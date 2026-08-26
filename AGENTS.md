@@ -100,7 +100,7 @@ Configuration is currently hard-coded near the top/middle of `servus.py` rather 
 - Backup remote: `https://github.com/MoinsenWerner/Musik-Client-API-Server-DB-Backups.git`.
 - Admin users: `felix`, `test`, `moin`.
 - Position-admin query password: defined by `ADMIN_REQUEST_PASSWORD`.
-- Spotify redirect URI: `https://api.extrahelden.de/callback`.
+- Spotify redirect URI: `https://api.cube-kingdom.de/callback`.
 - Gateway backend URLs: the three entries in `TARGET_BACKENDS`.
 - Allowed client OAuth redirects: `ALLOWED_REDIRECT_URIS`.
 - Flask secret key: randomly generated on each process start, so flash/session continuity does not survive restarts.
