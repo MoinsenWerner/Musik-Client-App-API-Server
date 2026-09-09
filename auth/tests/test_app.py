@@ -52,8 +52,8 @@ def test_related_origins_well_known_document(tmp_path):
             "TESTING": True,
             "DATABASE": tmp_path / "test.db",
             "VAULT_KEY": Fernet.generate_key(),
-            "ORIGIN": "https://api.cube-kingdom.de",
-            "RP_ID": "api.cube-kingdom.de",
+            "ORIGIN": "https://api.plsreload.de",
+            "RP_ID": "api.plsreload.de",
             "WEBAUTHN_RELATED_ORIGINS": (
                 "https://api.plsreload.de, https://app.cube-kingdom.de,"
                 "javascript:alert(1),https://invalid.example/path"
@@ -67,7 +67,6 @@ def test_related_origins_well_known_document(tmp_path):
     assert response.content_type == "application/json"
     assert response.json == {
         "origins": [
-            "https://api.cube-kingdom.de",
             "https://api.plsreload.de",
             "https://app.cube-kingdom.de",
         ]
@@ -94,8 +93,8 @@ def test_https_origin_enables_secure_session_cookie(tmp_path):
             "TESTING": True,
             "DATABASE": tmp_path / "test.db",
             "VAULT_KEY": Fernet.generate_key(),
-            "RP_ID": "api.cube-kingdom.de",
-            "ORIGIN": "https://api.cube-kingdom.de",
+            "RP_ID": "api.plsreload.de",
+            "ORIGIN": "https://api.plsreload.de",
         }
     )
 

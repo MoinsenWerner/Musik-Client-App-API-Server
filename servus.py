@@ -1052,7 +1052,7 @@ ROLE_SCOPES = {
     'Client': ['client', 'hcb-client']
 }
 
-SPOTIFY_FIXED_REDIRECT_URI = "https://api.cube-kingdom.de/callback"
+SPOTIFY_FIXED_REDIRECT_URI = "https://api.plsreload.de/callback"
 
 SPOTIFY_SCOPES = (
     "user-modify-playback-state "

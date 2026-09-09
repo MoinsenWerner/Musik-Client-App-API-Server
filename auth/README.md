@@ -26,28 +26,28 @@ python app.py
 auf Wunsch sichere neue Schlüssel. Das Skript muss mit `source` geladen werden,
 damit die exportierten Variablen anschließend für Flask verfügbar sind.
 
-### Cloudflare Tunnel für `api.cube-kingdom.de`
+### Cloudflare Tunnel für `api.plsreload.de`
 
 Der Tunnel darf intern weiterhin auf `http://localhost:2050` zeigen. Nach außen
 entscheidend ist ausschließlich die HTTPS-Adresse. Für den genannten Tunnel
 müssen diese Werte gelten (sie sind die Vorgaben im Setup-Skript):
 
 ```bash
-export RP_ID=api.cube-kingdom.de
-export ORIGIN=https://api.cube-kingdom.de
+export RP_ID=api.plsreload.de
+export ORIGIN=https://api.plsreload.de
 export WEBAUTHN_RELATED_ORIGINS=https://api.plsreload.de
 ```
 
 Danach sind die Seiten unter folgenden öffentlichen URLs verfügbar:
 
-* `https://api.cube-kingdom.de/register`
-* `https://api.cube-kingdom.de/get`
+* `https://api.plsreload.de/register`
+* `https://api.plsreload.de/get`
 
 `/.well-known/webauthn` wird automatisch als JSON-Dokument bereitgestellt.
 Die durch Kommas getrennten Werte aus `WEBAUTHN_RELATED_ORIGINS` erlauben den
-aufgelisteten HTTPS-Origins, dieselbe RP-ID zu verwenden. Das ist beispielsweise
-nötig, solange die Oberfläche noch über `https://api.plsreload.de` geöffnet wird,
-aber `api.cube-kingdom.de` als RP-ID konfiguriert ist.
+aufgelisteten HTTPS-Origins, dieselbe RP-ID zu verwenden. Weitere kontrollierte
+Webseiten können bei Bedarf als zusätzliche, kommaseparierte Origins ergänzt
+werden.
 
 Flask setzt bei einer HTTPS-`ORIGIN` automatisch ein Secure-Session-Cookie. Die
 von Cloudflare an Flask weitergeleitete interne HTTP-Verbindung beeinträchtigt

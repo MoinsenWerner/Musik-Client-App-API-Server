@@ -22,12 +22,12 @@ if [[ -z "$secret_key" ]]; then
 fi
 
 printf '\nRP_ID ist der öffentliche Hostname ohne https:// und ohne Pfad.\n'
-read -r -p 'RP_ID [api.cube-kingdom.de]: ' rp_id
-rp_id="${rp_id:-api.cube-kingdom.de}"
+read -r -p 'RP_ID [api.plsreload.de]: ' rp_id
+rp_id="${rp_id:-api.plsreload.de}"
 
 printf '\nORIGIN ist die vollständige öffentliche HTTPS-Adresse des Cloudflare-Tunnels.\n'
-read -r -p 'ORIGIN [https://api.cube-kingdom.de]: ' origin
-origin="${origin:-https://api.cube-kingdom.de}"
+read -r -p 'ORIGIN [https://api.plsreload.de]: ' origin
+origin="${origin:-https://api.plsreload.de}"
 
 if [[ "$rp_id" == *"://"* || "$rp_id" == */* ]]; then
   printf 'Fehler: RP_ID darf nur ein Hostname sein.\n' >&2
