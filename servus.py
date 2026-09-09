@@ -846,7 +846,7 @@ setattr(UserPosition, SPALTE_5, db.Column(db.Text, nullable=False))
     
     
 # ==========================================
-# TIMELINE & ACTION TRACKING ENDPUNKTE 
+# TIMELINE & ACTION TRACKING ENDPUNKTE
 # ==========================================
 
 def parse_custom_date(date_str):
@@ -1044,7 +1044,7 @@ ALLOWED_REDIRECT_URIS = [
     "http://100.115.184.104:8020",
     "http://127.0.0.1:8020",
     "http://37.44.215.123:8020",
-    "https://client.cube-kingdom.de/auth/callback"
+    "https://client.extrahelden.de/auth/callback"
 ]
 
 ROLE_SCOPES = {

@@ -18,10 +18,32 @@ def test_health(tmp_path):
     response = app.test_client().get("/health")
     assert response.status_code == 200
     assert response.json == {
-        "origin": "http://localhost:2050",
+        "origin": "http://localhost",
         "rp_id": "localhost",
         "status": "ok",
     }
+
+
+def test_webauthn_scope_defaults_to_public_request_origin(tmp_path):
+    app = configured_app(tmp_path)
+    client = app.test_client()
+
+    health = client.get(
+        "/health",
+        base_url="https://api.plsreload.de",
+        headers={"Origin": "https://api.plsreload.de"},
+    )
+    options = client.post(
+        "/api/register/options",
+        base_url="https://api.plsreload.de",
+        headers={"Origin": "https://api.plsreload.de"},
+        json={"username": "felix", "password": "secret", "type": "fingerprint"},
+    )
+
+    assert health.json["rp_id"] == "api.plsreload.de"
+    assert health.json["origin"] == "https://api.plsreload.de"
+    assert options.status_code == 200
+    assert options.json["rp"]["id"] == "api.plsreload.de"
 
 
 def test_browser_routes_work_without_query_parameters(tmp_path):
@@ -44,8 +66,8 @@ def test_https_origin_enables_secure_session_cookie(tmp_path):
             "TESTING": True,
             "DATABASE": tmp_path / "test.db",
             "VAULT_KEY": Fernet.generate_key(),
-            "RP_ID": "auth.extrahelden.de",
-            "ORIGIN": "https://auth.extrahelden.de",
+            "RP_ID": "api.cube-kingdom.de",
+            "ORIGIN": "https://api.cube-kingdom.de",
         }
     )
 

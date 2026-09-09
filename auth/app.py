@@ -39,9 +39,9 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
     app.config.from_mapping(
         SECRET_KEY=os.getenv("SECRET_KEY", "development-only-change-me"),
         DATABASE=os.getenv("DATABASE", str(Path(__file__).with_name("vault.db"))),
-        RP_ID=os.getenv("RP_ID", "localhost"),
+        RP_ID=os.getenv("RP_ID"),
         RP_NAME=os.getenv("RP_NAME", "Tasker Passkey Vault"),
-        ORIGIN=os.getenv("ORIGIN", "http://localhost:2050"),
+        ORIGIN=os.getenv("ORIGIN"),
         VAULT_KEY=os.getenv("VAULT_KEY"),
         CHALLENGE_TTL=300,
     )
@@ -49,7 +49,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         app.config.update(config)
     if not config or "SESSION_COOKIE_SECURE" not in config:
         app.config["SESSION_COOKIE_SECURE"] = (
-            urlparse(app.config["ORIGIN"]).scheme == "https"
+            urlparse(app.config.get("ORIGIN") or "").scheme == "https"
         )
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -81,6 +81,28 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             raise ValueError("JSON-Objekt erwartet")
         return value
 
+    def webauthn_context() -> tuple[str, str]:
+        """Return the configured WebAuthn scope or derive it from this request."""
+        configured_rp_id = app.config.get("RP_ID")
+        configured_origin = app.config.get("ORIGIN")
+        if configured_rp_id and configured_origin:
+            return str(configured_rp_id), str(configured_origin).rstrip("/")
+
+        request_host = urlparse(request.host_url).hostname
+        if not request_host:
+            raise RuntimeError("Der öffentliche Hostname konnte nicht bestimmt werden")
+        request_host = request_host.lower()
+        request_origin = request.headers.get("Origin", "").rstrip("/")
+        parsed_origin = urlparse(request_origin)
+        if (
+            parsed_origin.scheme in {"http", "https"}
+            and parsed_origin.hostname
+            and parsed_origin.hostname.lower() == request_host
+        ):
+            return request_host, request_origin
+
+        return request_host, request.host_url.rstrip("/")
+
     def remember(kind: str, username: str, challenge: bytes, **extra: Any) -> None:
         session[kind] = {
             "username": username,
@@ -105,10 +127,11 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/health")
     def health():
+        rp_id, origin = webauthn_context()
         return jsonify(
             status="ok",
-            origin=app.config["ORIGIN"],
-            rp_id=app.config["RP_ID"],
+            origin=origin,
+            rp_id=rp_id,
         )
 
     @app.get("/register")
@@ -144,8 +167,9 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             if passkey_type == "fido"
             else AuthenticatorAttachment.PLATFORM
         )
+        rp_id, origin = webauthn_context()
         options = generate_registration_options(
-            rp_id=app.config["RP_ID"],
+            rp_id=rp_id,
             rp_name=app.config["RP_NAME"],
             user_id=username.encode(),
             user_name=username,
@@ -161,6 +185,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             options.challenge,
             encrypted_password=cipher().encrypt(password.encode()).decode(),
             passkey_type=passkey_type,
+            rp_id=rp_id,
+            origin=origin,
         )
         return app.response_class(options_to_json(options), mimetype="application/json")
 
@@ -170,8 +196,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         verification = verify_registration_response(
             credential=payload(),
             expected_challenge=_unb64(state["challenge"]),
-            expected_rp_id=app.config["RP_ID"],
-            expected_origin=app.config["ORIGIN"],
+            expected_rp_id=state["rp_id"],
+            expected_origin=state["origin"],
             require_user_verification=True,
         )
         with database() as db:
@@ -203,12 +229,19 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             ).fetchone()
         if row is None:
             raise ValueError("Unbekannter Benutzer")
+        rp_id, origin = webauthn_context()
         options = generate_authentication_options(
-            rp_id=app.config["RP_ID"],
+            rp_id=rp_id,
             allow_credentials=[PublicKeyCredentialDescriptor(id=row["credential_id"])],
             user_verification=UserVerificationRequirement.REQUIRED,
         )
-        remember("authentication", username, options.challenge)
+        remember(
+            "authentication",
+            username,
+            options.challenge,
+            rp_id=rp_id,
+            origin=origin,
+        )
         return app.response_class(options_to_json(options), mimetype="application/json")
 
     @app.post("/api/authenticate/verify")
@@ -223,8 +256,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             verification = verify_authentication_response(
                 credential=payload(),
                 expected_challenge=_unb64(state["challenge"]),
-                expected_rp_id=app.config["RP_ID"],
-                expected_origin=app.config["ORIGIN"],
+                expected_rp_id=state["rp_id"],
+                expected_origin=state["origin"],
                 credential_public_key=row["public_key"],
                 credential_current_sign_count=row["sign_count"],
                 require_user_verification=True,

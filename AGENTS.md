@@ -28,6 +28,7 @@ Most Python behavior is in `servus.py`; the independently runnable chat subsyste
 
 - `servus.py`: the complete Flask app, configuration constants, SQLAlchemy models, startup schema alterations, backup hooks, request/response logging, OAuth implementation, Spotify/local-backend proxy, all API routes, and an inline dashboard template.
 - `chat.py`: independent chat blueprint, chat-specific SQLite schema, attachment storage, direct/self/group messaging, history, and media routes. `servus.py` imports and registers it automatically; `python3 chat.py` runs it alone on the same host/port.
+- `auth/`: independently runnable WebAuthn/passkey vault with its Flask app, template, dependency files, setup script, and tests. `servus.py` mounts it into the same WSGI listener on port 2050; `python3 auth/app.py` runs it alone.
 - `README.md`: currently only the repository title; this `AGENTS.md` is the authoritative engineering guide.
 - `AGENTS.md`: this file. Update it whenever externally visible behavior or repository structure changes.
 - `.gitignore`: ignores `/db_bak/`, which contains sensitive generated database backups and the backup repository clone.
@@ -58,6 +59,11 @@ Most Python behavior is in `servus.py`; the independently runnable chat subsyste
 - `uploads/core-data-abfragen.txt`: append-only validated Core-Data submissions.
 - `chat.db`: separate SQLite database containing chat messages, groups, memberships, and attachment metadata.
 - `chat_uploads/`: uploaded chat files and images; opaque response IDs form the stored filenames.
+- `auth/vault.db`: encrypted passkey-vault database, created automatically by the auth application.
+
+Do not commit runtime databases, logs, uploaded APKs, credentials, or backup clones. The main databases, chat uploads, logs, backups, and Python bytecode are ignored, but still inspect `git status` carefully for other generated files.
+
+## 3. Runtime dependencies and operation
 
 The imports imply these non-stdlib dependencies:
 
@@ -68,6 +74,8 @@ requests
 packaging
 Werkzeug
 SQLAlchemy (installed transitively by Flask-SQLAlchemy)
+cryptography
+webauthn
 ```
 
 A typical development setup is:
@@ -267,7 +275,7 @@ The auth Flask application is routed by `AuthRoutingMiddleware` through the same
 - **POST `/api/authenticate/options`** — Accepts JSON `username` and returns WebAuthn authentication options for the stored credential.
 - **POST `/api/authenticate/verify`** — Verifies the assertion, updates the signature counter, decrypts the stored password, and returns `username` and `password` as JSON.
 
-The same routes below `/auth` are `/auth/health`, `/auth/register`, `/auth/get`, and `/auth/api/...`. WebAuthn requires a stable `VAULT_KEY`, `SECRET_KEY`, `RP_ID`, and public HTTPS `ORIGIN`; use `source auth/set-secrets.sh`. The configured origin is an origin only (scheme/host/port), so mounting below `/auth` does not change it.
+The same routes below `/auth` are `/auth/health`, `/auth/register`, `/auth/get`, and `/auth/api/...`. WebAuthn requires stable `VAULT_KEY` and `SECRET_KEY` values. `RP_ID` and public HTTPS `ORIGIN` may be configured with `source auth/set-secrets.sh`; when both are unset, the app derives them from the current same-origin request and stores them with each challenge. This lets direct public API hosts work without accidentally emitting `localhost` as the relying-party ID. The configured/derived origin is an origin only (scheme/host/port), so mounting below `/auth` does not change it.
 
 ### Chat subsystem
 

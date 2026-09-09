@@ -26,21 +26,21 @@ python app.py
 auf Wunsch sichere neue Schlüssel. Das Skript muss mit `source` geladen werden,
 damit die exportierten Variablen anschließend für Flask verfügbar sind.
 
-### Cloudflare Tunnel für `auth.extrahelden.de`
+### Cloudflare Tunnel für `api.cube-kingdom.de`
 
 Der Tunnel darf intern weiterhin auf `http://localhost:2050` zeigen. Nach außen
 entscheidend ist ausschließlich die HTTPS-Adresse. Für den genannten Tunnel
 müssen diese Werte gelten (sie sind die Vorgaben im Setup-Skript):
 
 ```bash
-export RP_ID=auth.extrahelden.de
-export ORIGIN=https://auth.extrahelden.de
+export RP_ID=api.cube-kingdom.de
+export ORIGIN=https://api.cube-kingdom.de
 ```
 
 Danach sind die Seiten unter folgenden öffentlichen URLs verfügbar:
 
-* `https://auth.extrahelden.de/register`
-* `https://auth.extrahelden.de/get`
+* `https://api.cube-kingdom.de/register`
+* `https://api.cube-kingdom.de/get`
 
 Flask setzt bei einer HTTPS-`ORIGIN` automatisch ein Secure-Session-Cookie. Die
 von Cloudflare an Flask weitergeleitete interne HTTP-Verbindung beeinträchtigt
