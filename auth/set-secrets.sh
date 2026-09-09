@@ -42,10 +42,12 @@ export VAULT_KEY="$vault_key"
 export SECRET_KEY="$secret_key"
 export RP_ID="$rp_id"
 export ORIGIN="$origin"
+export WEBAUTHN_RELATED_ORIGINS="https://api.plsreload.de"
 unset vault_key secret_key rp_id origin
 
 printf '\nKonfiguration geladen:\n'
 printf '  RP_ID=%s\n' "$RP_ID"
 printf '  ORIGIN=%s\n' "$ORIGIN"
+printf '  WEBAUTHN_RELATED_ORIGINS=%s\n' "$WEBAUTHN_RELATED_ORIGINS"
 printf 'Die geheimen Schlüssel wurden erzeugt/exportiert, aber nicht angezeigt.\n'
 printf 'Jetzt kann der Server mit "python app.py" gestartet werden.\n'

@@ -46,6 +46,34 @@ def test_webauthn_scope_defaults_to_public_request_origin(tmp_path):
     assert options.json["rp"]["id"] == "api.plsreload.de"
 
 
+def test_related_origins_well_known_document(tmp_path):
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": tmp_path / "test.db",
+            "VAULT_KEY": Fernet.generate_key(),
+            "ORIGIN": "https://api.cube-kingdom.de",
+            "RP_ID": "api.cube-kingdom.de",
+            "WEBAUTHN_RELATED_ORIGINS": (
+                "https://api.plsreload.de, https://app.cube-kingdom.de,"
+                "javascript:alert(1),https://invalid.example/path"
+            ),
+        }
+    )
+
+    response = app.test_client().get("/.well-known/webauthn")
+
+    assert response.status_code == 200
+    assert response.content_type == "application/json"
+    assert response.json == {
+        "origins": [
+            "https://api.cube-kingdom.de",
+            "https://api.plsreload.de",
+            "https://app.cube-kingdom.de",
+        ]
+    }
+
+
 def test_browser_routes_work_without_query_parameters(tmp_path):
     client = configured_app(tmp_path).test_client()
 

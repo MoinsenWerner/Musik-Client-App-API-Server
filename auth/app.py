@@ -42,6 +42,9 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         RP_ID=os.getenv("RP_ID"),
         RP_NAME=os.getenv("RP_NAME", "Tasker Passkey Vault"),
         ORIGIN=os.getenv("ORIGIN"),
+        WEBAUTHN_RELATED_ORIGINS=os.getenv(
+            "WEBAUTHN_RELATED_ORIGINS", "https://api.plsreload.de"
+        ),
         VAULT_KEY=os.getenv("VAULT_KEY"),
         CHALLENGE_TTL=300,
     )
@@ -103,6 +106,33 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
 
         return request_host, request.host_url.rstrip("/")
 
+    def related_origins() -> list[str]:
+        """Build the explicit HTTPS origin allow-list for Related Origin Requests."""
+        configured = app.config.get("WEBAUTHN_RELATED_ORIGINS", "")
+        values = (
+            configured
+            if isinstance(configured, (list, tuple, set))
+            else str(configured).split(",")
+        )
+        candidates = [app.config.get("ORIGIN"), *values]
+        origins: list[str] = []
+        for candidate in candidates:
+            origin = str(candidate or "").strip().rstrip("/")
+            parsed = urlparse(origin)
+            if (
+                not origin
+                or parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.path not in {"", "/"}
+                or parsed.params
+                or parsed.query
+                or parsed.fragment
+            ):
+                continue
+            if origin not in origins:
+                origins.append(origin)
+        return origins
+
     def remember(kind: str, username: str, challenge: bytes, **extra: Any) -> None:
         session[kind] = {
             "username": username,
@@ -133,6 +163,10 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             origin=origin,
             rp_id=rp_id,
         )
+
+    @app.get("/.well-known/webauthn")
+    def webauthn_related_origins():
+        return jsonify(origins=related_origins())
 
     @app.get("/register")
     def register_page():
