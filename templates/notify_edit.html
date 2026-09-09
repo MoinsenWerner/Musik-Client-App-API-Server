@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Benachrichtigungen bearbeiten</title>
+    <style>
+        :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+        body { margin: 0; background: #111827; color: #e5e7eb; }
+        main { width: min(1000px, calc(100% - 2rem)); margin: 3rem auto; }
+        .notification { display: grid; gap: .8rem; margin: 1rem 0; padding: 1.2rem; background: #1f2937; border: 1px solid #374151; border-radius: .75rem; }
+        .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
+        label { display: grid; gap: .3rem; font-size: .9rem; }
+        input, textarea { padding: .65rem; border: 1px solid #4b5563; border-radius: .4rem; background: #111827; color: #f9fafb; font: inherit; }
+        textarea { min-height: 7rem; resize: vertical; }
+        .actions { display: flex; gap: .7rem; }
+        button, .add { padding: .65rem 1rem; border: 0; border-radius: .4rem; color: white; font-weight: 700; cursor: pointer; text-decoration: none; }
+        button { background: #2563eb; }
+        .delete { background: #b91c1c; }
+        .add { display: inline-block; background: #047857; }
+        .error { padding: .8rem; background: #7f1d1d; border-radius: .4rem; }
+        .message { padding: .8rem; background: #065f46; border-radius: .4rem; }
+        @media (max-width: 700px) { .fields { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Benachrichtigungen bearbeiten</h1>
+        <a class="add" href="/notify/add">Neue Benachrichtigung</a>
+        {% with messages = get_flashed_messages() %}{% for message in messages %}<p class="message">{{ message }}</p>{% endfor %}{% endwith %}
+        {% if error %}<p class="error">{{ error }}</p>{% endif %}
+        {% if not notifications %}<p>Es sind noch keine Benachrichtigungen vorhanden.</p>{% endif %}
+        {% for notification in notifications %}
+            <form class="notification" method="post">
+                <input type="hidden" name="notification_id" value="{{ notification.id }}">
+                <div class="fields">
+                    <label>Titel *<input name="title" required value="{{ notification.title }}"></label>
+                    <label>Text *<textarea name="text" rows="5" required>{{ notification.text }}</textarea></label>
+                    <label>Categorie *<input name="category" required value="{{ notification.category }}"></label>
+                    <label>Gruppe *<input name="notification_group" required value="{{ notification.notification_group }}"></label>
+                    <label>Png-Pfad<input name="png_path" value="{{ notification.png_path or '' }}"></label>
+                </div>
+                <div class="actions">
+                    <button type="submit" name="action" value="save">Speichern</button>
+                    <button class="delete" type="submit" name="action" value="delete" formnovalidate onclick="return confirm('Benachrichtigung wirklich löschen?')">Löschen</button>
+                </div>
+            </form>
+        {% endfor %}
+    </main>
+</body>
+</html>
