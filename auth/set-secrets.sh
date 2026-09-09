@@ -51,3 +51,4 @@ printf '  ORIGIN=%s\n' "$ORIGIN"
 printf '  WEBAUTHN_RELATED_ORIGINS=%s\n' "$WEBAUTHN_RELATED_ORIGINS"
 printf 'Die geheimen Schlüssel wurden erzeugt/exportiert, aber nicht angezeigt.\n'
 printf 'Jetzt kann der Server mit "python app.py" gestartet werden.\n'
+
