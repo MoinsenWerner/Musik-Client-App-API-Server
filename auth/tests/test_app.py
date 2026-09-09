@@ -46,6 +46,33 @@ def test_webauthn_scope_defaults_to_public_request_origin(tmp_path):
     assert options.json["rp"]["id"] == "api.plsreload.de"
 
 
+def test_stale_config_cannot_emit_an_invalid_rp_id(tmp_path):
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": tmp_path / "test.db",
+            "VAULT_KEY": Fernet.generate_key(),
+            "RP_ID": "old-api.example.net",
+            "ORIGIN": "https://old-api.example.net",
+            "SESSION_COOKIE_SECURE": False,
+        }
+    )
+    client = app.test_client()
+
+    response = client.post(
+        "/api/register/options",
+        base_url="https://api.plsreload.de",
+        headers={"Origin": "https://api.plsreload.de"},
+        json={"username": "felix", "password": "secret", "type": "fingerprint"},
+    )
+
+    assert response.status_code == 200
+    assert response.json["rp"]["id"] == "api.plsreload.de"
+    with client.session_transaction(base_url="https://api.plsreload.de") as browser_session:
+        assert browser_session["registration"]["rp_id"] == "api.plsreload.de"
+        assert browser_session["registration"]["origin"] == "https://api.plsreload.de"
+
+
 def test_related_origins_well_known_document(tmp_path):
     app = create_app(
         {

@@ -85,26 +85,44 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         return value
 
     def webauthn_context() -> tuple[str, str]:
-        """Return the configured WebAuthn scope or derive it from this request."""
-        configured_rp_id = app.config.get("RP_ID")
-        configured_origin = app.config.get("ORIGIN")
-        if configured_rp_id and configured_origin:
-            return str(configured_rp_id), str(configured_origin).rstrip("/")
-
-        request_host = urlparse(request.host_url).hostname
+        """Return a WebAuthn scope that is valid for the browser's current host."""
+        request_url = urlparse(request.host_url)
+        request_host = request_url.hostname
         if not request_host:
             raise RuntimeError("Der öffentliche Hostname konnte nicht bestimmt werden")
         request_host = request_host.lower()
-        request_origin = request.headers.get("Origin", "").rstrip("/")
-        parsed_origin = urlparse(request_origin)
-        if (
-            parsed_origin.scheme in {"http", "https"}
-            and parsed_origin.hostname
-            and parsed_origin.hostname.lower() == request_host
-        ):
-            return request_host, request_origin
 
-        return request_host, request.host_url.rstrip("/")
+        header_origin = request.headers.get("Origin", "").rstrip("/")
+        parsed_header_origin = urlparse(header_origin)
+        if (
+            parsed_header_origin.scheme in {"http", "https"}
+            and parsed_header_origin.hostname
+            and parsed_header_origin.path in {"", "/"}
+            and not parsed_header_origin.query
+            and not parsed_header_origin.fragment
+        ):
+            browser_host = parsed_header_origin.hostname.lower()
+            browser_origin = header_origin
+        else:
+            browser_host = request_host
+            configured_origin = str(app.config.get("ORIGIN") or "").rstrip("/")
+            parsed_configured_origin = urlparse(configured_origin)
+            if (
+                parsed_configured_origin.scheme in {"http", "https"}
+                and parsed_configured_origin.hostname
+                and parsed_configured_origin.hostname.lower() == browser_host
+            ):
+                browser_origin = configured_origin
+            else:
+                browser_origin = request.host_url.rstrip("/")
+
+        configured_rp_id = str(app.config.get("RP_ID") or "").strip().lower().rstrip(".")
+        if configured_rp_id and (
+            browser_host == configured_rp_id
+            or browser_host.endswith(f".{configured_rp_id}")
+        ):
+            return configured_rp_id, browser_origin
+        return browser_host, browser_origin
 
     def related_origins() -> list[str]:
         """Build the explicit HTTPS origin allow-list for Related Origin Requests."""

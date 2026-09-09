@@ -54,6 +54,13 @@ von Cloudflare an Flask weitergeleitete interne HTTP-Verbindung beeinträchtigt
 WebAuthn nicht, weil Registrierung und Authentifizierung im Browser unter der
 öffentlichen HTTPS-Origin stattfinden.
 
+Bei den Options-Requests prüft die Anwendung zusätzlich, ob die konfigurierte
+`RP_ID` gleich dem aktuellen Browser-Host oder ein Domain-Suffix davon ist. Eine
+veraltete oder unpassende Servervariable wird nicht mehr an den Browser
+ausgeliefert; stattdessen wird der aktuelle Host (zum Beispiel
+`api.plsreload.de`) verwendet. Die für die Challenge gewählte RP-ID und Origin
+werden anschließend unverändert für die Verifikation verwendet.
+
 Im Netzwerk muss vor Flask ein HTTPS-Reverse-Proxy stehen. `RP_ID` ist nur der
 Hostname, `ORIGIN` enthält Schema und gegebenenfalls Port. Ohne dauerhaftes
 `VAULT_KEY` können gespeicherte Passwörter nach einem Neustart nicht mehr
