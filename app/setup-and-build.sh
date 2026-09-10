@@ -46,9 +46,9 @@ chmod +x "$APP_DIR/android/gradlew"
 mkdir -p "$OUTPUT_DIR"
 if [[ ! -f "$KEYSTORE" ]]; then
   STORE_PASSWORD="$(openssl rand -hex 24)"
-  KEY_PASSWORD="$(openssl rand -hex 24)"
+  KEY_PASSWORD="$STORE_PASSWORD"
   keytool -genkeypair -v -keystore "$KEYSTORE" -alias passkey-vault \
-    -storetype JKS -keyalg RSA -keysize 4096 -validity 10000 \
+    -storetype PKCS12 -keyalg RSA -keysize 4096 -validity 10000 \
     -storepass "$STORE_PASSWORD" -keypass "$KEY_PASSWORD" \
     -dname "CN=Passkey Vault, O=plsreload, C=DE"
   umask 077
@@ -72,8 +72,11 @@ flutter test
 flutter build apk --release
 install -m 0644 build/app/outputs/flutter-apk/app-release.apk "$OUTPUT_DIR/output.apk"
 
-FINGERPRINT="$(keytool -list -v -keystore "$KEYSTORE" -alias passkey-vault -storepass "$STORE_PASSWORD" | sed -n 's/^[[:space:]]*SHA256: //p' | head -1)"
+FINGERPRINT="$(keytool -list -v -keystore "$KEYSTORE" -alias passkey-vault -storepass "$STORE_PASSWORD" 2>/dev/null | sed -n 's/^[[:space:]]*SHA256: //p' | head -1)"
+printf '%s\n' "$FINGERPRINT" > "$OUTPUT_DIR/cert-sha256.txt"
+chmod 0644 "$OUTPUT_DIR/cert-sha256.txt"
 echo "APK erstellt: $OUTPUT_DIR/output.apk"
 echo "ANDROID_APP_PACKAGE=de.plsreload.passkey_vault"
 echo "ANDROID_CERT_SHA256=$FINGERPRINT"
-echo "Setze beide Werte beim Flask-Server und starte ihn neu."
+echo "Der Fingerprint wurde zusätzlich nach $OUTPUT_DIR/cert-sha256.txt geschrieben."
+echo "Starte den Flask-Server neu und prüfe danach /.well-known/assetlinks.json."

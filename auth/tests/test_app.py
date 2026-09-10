@@ -146,9 +146,11 @@ def test_authentication_unknown_user(tmp_path):
 
 
 def test_android_asset_links_requires_certificate(tmp_path):
-    response = configured_app(tmp_path).test_client().get("/.well-known/assetlinks.json")
+    app = configured_app(tmp_path)
+    app.config["ANDROID_CERT_SHA256_FILE"] = tmp_path / "missing-fingerprint.txt"
+    response = app.test_client().get("/.well-known/assetlinks.json")
     assert response.status_code == 503
-    assert response.json == {"error": "ANDROID_CERT_SHA256 ist nicht gesetzt"}
+    assert "ANDROID_CERT_SHA256 ist nicht gesetzt" in response.json["error"]
 
 
 def test_android_asset_links_document(tmp_path):
@@ -158,7 +160,10 @@ def test_android_asset_links_document(tmp_path):
             "DATABASE": tmp_path / "test.db",
             "VAULT_KEY": Fernet.generate_key(),
             "ANDROID_APP_PACKAGE": "de.plsreload.passkey_vault",
-            "ANDROID_CERT_SHA256": "AA:BB, cc:dd",
+            "ANDROID_CERT_SHA256": (
+                "F7:0D:DB:43:03:65:B0:C2:D9:BD:13:B9:4A:56:DD:68:"
+                "2B:D0:0A:A1:E1:AD:8E:84:D8:59:B0:25:EA:06:18:8F"
+            ),
         }
     )
     response = app.test_client().get("/.well-known/assetlinks.json")
@@ -169,7 +174,36 @@ def test_android_asset_links_document(tmp_path):
             "target": {
                 "namespace": "android_app",
                 "package_name": "de.plsreload.passkey_vault",
-                "sha256_cert_fingerprints": ["AA:BB", "CC:DD"],
+                "sha256_cert_fingerprints": [
+                    "F7:0D:DB:43:03:65:B0:C2:D9:BD:13:B9:4A:56:DD:68:"
+                    "2B:D0:0A:A1:E1:AD:8E:84:D8:59:B0:25:EA:06:18:8F"
+                ],
             },
         }
     ]
+
+
+def test_android_asset_links_reads_and_normalizes_fingerprint_file(tmp_path):
+    fingerprint_file = tmp_path / "cert-sha256.txt"
+    fingerprint_file.write_text("aabbccddeeff00112233445566778899" * 2)
+    app = configured_app(tmp_path)
+    app.config["ANDROID_CERT_SHA256_FILE"] = fingerprint_file
+
+    response = app.test_client().get("/.well-known/assetlinks.json")
+
+    assert response.status_code == 200
+    assert response.json[0]["target"]["sha256_cert_fingerprints"] == [
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:"
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+    ]
+
+
+def test_android_asset_links_rejects_malformed_fingerprint(tmp_path):
+    app = configured_app(tmp_path)
+    app.config["ANDROID_CERT_SHA256"] = "F7D41C8EFB7DBFD5B573F566FD82B9250A161581BC"
+
+    response = app.test_client().get("/.well-known/assetlinks.json")
+
+    assert response.status_code == 503
+    assert response.json["received_hex_characters"] == 42
+    assert "64 Hex-Zeichen" in response.json["error"]

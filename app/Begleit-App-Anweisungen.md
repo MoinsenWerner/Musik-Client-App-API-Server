@@ -229,14 +229,34 @@ Für Passwörter ist der explizite Intent vorzuziehen, weil URL-Werte leichter p
 
 ## Server-Verknüpfung
 
-Android verlangt für native Passkeys eine Digital-Asset-Links-Verknüpfung. Der Server stellt `/.well-known/assetlinks.json` bereit, sobald folgende Variablen gesetzt sind:
+Android verlangt für native Passkeys eine Digital-Asset-Links-Verknüpfung. `setup-and-build.sh` schreibt den exakten SHA-256-Fingerabdruck automatisch nach `/home/passkey-apk/cert-sha256.txt`. Die Serverroute `/.well-known/assetlinks.json` liest standardmäßig diese Datei; manuelles Kopieren des Fingerprints ist auf demselben Server nicht mehr nötig.
+
+Alternativ kann die Datei oder der Wert ausdrücklich konfiguriert werden:
 
 ```bash
 export ANDROID_APP_PACKAGE=de.plsreload.passkey_vault
-export ANDROID_CERT_SHA256='<Ausgabe des Build-Skripts>'
+export ANDROID_CERT_SHA256_FILE=/home/passkey-apk/cert-sha256.txt
+# Oder statt der Datei:
+export ANDROID_CERT_SHA256='<64 Hex-Zeichen als 32 durch Doppelpunkte getrennte Bytes>'
 ```
 
-Nach dem ersten Build zeigt `setup-and-build.sh` den SHA-256-Fingerabdruck an. Setze ihn dauerhaft auf dem Flask-Server und starte diesen neu, bevor Passkeys verwendet werden. Der von `setup-and-build.sh` erzeugte Keystore unter `/home/passkey-apk/passkey-release.jks` muss dauerhaft gesichert und bei allen späteren Builds wiederverwendet werden.
+`ANDROID_CERT_SHA256` hat Vorrang vor der Datei. Ein ungültiger oder verkürzter Fingerprint wird mit HTTP 503 abgelehnt, statt ein ungültiges Asset-Links-Dokument auszuliefern.
+
+Nach dem Build muss Flask neu gestartet werden. Prüfe anschließend zwingend:
+
+```bash
+curl -fsS https://api.plsreload.de/.well-known/assetlinks.json
+```
+
+Unter `sha256_cert_fingerprints` muss exakt der vom Build ausgegebene Fingerprint stehen. Die Google-Prüfung darf anschließend keinen Fehler melden:
+
+```bash
+curl -fsS --get 'https://digitalassetlinks.googleapis.com/v1/statements:list' \
+  --data-urlencode 'source.web.site=https://api.plsreload.de' \
+  --data-urlencode 'relation=delegate_permission/common.get_login_creds'
+```
+
+Der von `setup-and-build.sh` erzeugte Keystore unter `/home/passkey-apk/passkey-release.jks` muss dauerhaft gesichert und bei allen späteren Builds wiederverwendet werden.
 
 ## Keine unsichere Tasker-Ersatzlösung verwenden
 

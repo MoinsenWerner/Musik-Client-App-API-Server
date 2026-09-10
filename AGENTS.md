@@ -343,6 +343,6 @@ The webchat switches to its full-screen mobile list/detail navigation automatica
 
 - `app/`: Flutter Android companion app using Android Credential Manager for browserless passkey registration/authentication and explicit Tasker intents.
 - `app/setup-and-build.sh`: installs Flutter/Android build dependencies on Debian, creates a persistent release key, runs analysis/tests/build, and copies the signed APK to `/home/passkey-apk/output.apk`.
-- `GET /.well-known/assetlinks.json`: returns Android Digital Asset Links for `ANDROID_APP_PACKAGE` and comma-separated `ANDROID_CERT_SHA256` certificate fingerprints; returns 503 until a fingerprint is configured.
+- `GET /.well-known/assetlinks.json`: returns Android Digital Asset Links for `ANDROID_APP_PACKAGE` and comma-separated `ANDROID_CERT_SHA256` certificate fingerprints. If the environment value is empty, it reads `ANDROID_CERT_SHA256_FILE` (default `/home/passkey-apk/cert-sha256.txt`, written by the companion build). Fingerprints are normalized to colon-separated SHA-256 and malformed values return 503.
 
 The companion accepts action `de.plsreload.passkey_vault.EXECUTE` with `operation`, `username`, optional `password`, and optional `type`, and broadcasts results to Tasker with action `de.plsreload.passkey_vault.RESULT`. Keep the release keystore and `signing.env` generated below `/home/passkey-apk`; losing or replacing it changes the fingerprint and breaks the app/RP association.
