@@ -338,3 +338,11 @@ The webchat switches to its full-screen mobile list/detail navigation automatica
 8. Do not remove existing code unless the task explicitly requires it. This app has Tasker clients that may depend on odd-looking compatibility behavior.
 9. Before committing, clean generated files and inspect `git status`. Commit changes on the current branch with a focused message.
 10. Keep this guide current, especially the file inventory and complete route catalog.
+
+### Android passkey companion (`app/`)
+
+- `app/`: Flutter Android companion app using Android Credential Manager for browserless passkey registration/authentication and explicit Tasker intents.
+- `app/setup-and-build.sh`: installs Flutter/Android build dependencies on Debian, creates a persistent release key, runs analysis/tests/build, and copies the signed APK to `/home/passkey-apk/output.apk`.
+- `GET /.well-known/assetlinks.json`: returns Android Digital Asset Links for `ANDROID_APP_PACKAGE` and comma-separated `ANDROID_CERT_SHA256` certificate fingerprints; returns 503 until a fingerprint is configured.
+
+The companion accepts action `de.plsreload.passkey_vault.EXECUTE` with `operation`, `username`, optional `password`, and optional `type`, and broadcasts results to Tasker with action `de.plsreload.passkey_vault.RESULT`. Keep the release keystore and `signing.env` generated below `/home/passkey-apk`; losing or replacing it changes the fingerprint and breaks the app/RP association.
