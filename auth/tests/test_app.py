@@ -143,3 +143,33 @@ def test_authentication_unknown_user(tmp_path):
     response = app.test_client().post("/api/authenticate/options", json={"username": "nobody"})
     assert response.status_code == 400
     assert response.json == {"error": "Unbekannter Benutzer"}
+
+
+def test_android_asset_links_requires_certificate(tmp_path):
+    response = configured_app(tmp_path).test_client().get("/.well-known/assetlinks.json")
+    assert response.status_code == 503
+    assert response.json == {"error": "ANDROID_CERT_SHA256 ist nicht gesetzt"}
+
+
+def test_android_asset_links_document(tmp_path):
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": tmp_path / "test.db",
+            "VAULT_KEY": Fernet.generate_key(),
+            "ANDROID_APP_PACKAGE": "de.plsreload.passkey_vault",
+            "ANDROID_CERT_SHA256": "AA:BB, cc:dd",
+        }
+    )
+    response = app.test_client().get("/.well-known/assetlinks.json")
+    assert response.status_code == 200
+    assert response.json == [
+        {
+            "relation": ["delegate_permission/common.get_login_creds"],
+            "target": {
+                "namespace": "android_app",
+                "package_name": "de.plsreload.passkey_vault",
+                "sha256_cert_fingerprints": ["AA:BB", "CC:DD"],
+            },
+        }
+    ]

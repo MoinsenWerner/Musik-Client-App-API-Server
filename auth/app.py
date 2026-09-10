@@ -45,6 +45,10 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         WEBAUTHN_RELATED_ORIGINS=os.getenv(
             "WEBAUTHN_RELATED_ORIGINS", "https://api.plsreload.de"
         ),
+        ANDROID_APP_PACKAGE=os.getenv(
+            "ANDROID_APP_PACKAGE", "de.plsreload.passkey_vault"
+        ),
+        ANDROID_CERT_SHA256=os.getenv("ANDROID_CERT_SHA256", ""),
         VAULT_KEY=os.getenv("VAULT_KEY"),
         CHALLENGE_TTL=300,
     )
@@ -185,6 +189,29 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
     @app.get("/.well-known/webauthn")
     def webauthn_related_origins():
         return jsonify(origins=related_origins())
+
+    @app.get("/.well-known/assetlinks.json")
+    def android_asset_links():
+        """Associate the Android companion app with this WebAuthn relying party."""
+        fingerprints = [
+            value.strip().upper()
+            for value in str(app.config["ANDROID_CERT_SHA256"]).split(",")
+            if value.strip()
+        ]
+        if not fingerprints:
+            return jsonify(error="ANDROID_CERT_SHA256 ist nicht gesetzt"), 503
+        return jsonify(
+            [
+                {
+                    "relation": ["delegate_permission/common.get_login_creds"],
+                    "target": {
+                        "namespace": "android_app",
+                        "package_name": app.config["ANDROID_APP_PACKAGE"],
+                        "sha256_cert_fingerprints": fingerprints,
+                    },
+                }
+            ]
+        )
 
     @app.get("/register")
     def register_page():
