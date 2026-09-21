@@ -171,7 +171,10 @@ def test_android_asset_links_document(tmp_path):
     assert response.status_code == 200
     assert response.json == [
         {
-            "relation": [\n                "delegate_permission/common.get_login_creds",\n                "delegate_permission/common.handle_all_urls",\n            ],
+            "relation": [
+                "delegate_permission/common.get_login_creds",
+                "delegate_permission/common.handle_all_urls",
+            ],
             "target": {
                 "namespace": "android_app",
                 "package_name": "de.plsreload.passkey_vault",
