@@ -284,3 +284,7 @@ Wenn Credential Manager eine RP-/Relying-Party-Fehlermeldung ausgibt, tippe in d
 Der Wert `assetlinks_matches_app_signature` muss `true` sein. Ist er `false`, installiere genau die APK aus dem Build, deren Fingerprint in `/home/passkey-apk/cert-sha256.txt` steht, und kontrolliere, dass die öffentliche Asset-Links-Datei denselben Wert enthält. Bei einer erneuten Signatur mit anderem Keystore muss die Asset-Links-Datei aktualisiert werden.
 
 Die einfachen `/register`- und `/get`-Webseiten sind nur für Browser mit WebAuthn-Unterstützung gedacht. Eine Tasker-WebView besitzt häufig kein `navigator.credentials`; sie zeigt deshalb nun einen verständlichen Hinweis und muss für die browserlose Nutzung durch die Begleit-App ersetzt werden.
+
+### Android-App-seitige RP-Verknüpfung
+
+Die Begleit-App deklariert die öffentliche Digital-Asset-Links-Datei zusätzlich über die Android-Manifest-Metadaten `asset_statements`. Diese Deklaration ist neben der serverseitigen `assetlinks.json` erforderlich, damit Credential Manager die in den WebAuthn-Optionen enthaltene RP-ID `api.plsreload.de` der nativen App zuordnen kann. Nach Änderungen daran muss die APK neu gebaut und installiert werden; ein reiner Serverneustart aktualisiert die installierte App nicht.

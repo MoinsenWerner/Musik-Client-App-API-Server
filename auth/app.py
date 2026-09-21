@@ -231,10 +231,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         return jsonify(
             [
                 {
-                    "relation": [
-                        "delegate_permission/common.get_login_creds",
-                        "delegate_permission/common.handle_all_urls",
-                    ],
+                    "relation": ["delegate_permission/common.get_login_creds"],
                     "target": {
                         "namespace": "android_app",
                         "package_name": app.config["ANDROID_APP_PACKAGE"],

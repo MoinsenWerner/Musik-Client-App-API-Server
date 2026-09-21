@@ -348,3 +348,5 @@ The webchat switches to its full-screen mobile list/detail navigation automatica
 The companion accepts action `de.plsreload.passkey_vault.EXECUTE` with `operation`, `username`, optional `password`, and optional `type`, and broadcasts results to Tasker with action `de.plsreload.passkey_vault.RESULT`. Keep the release keystore and `signing.env` generated below `/home/passkey-apk`; losing or replacing it changes the fingerprint and breaks the app/RP association.
 
 The browser passkey template detects missing `navigator.credentials` (common in Tasker WebViews) and displays an actionable companion-app/Chrome explanation rather than attempting `undefined.create()` or `undefined.get()`. The Android companion has an in-app RP/Asset-Links diagnostics action that compares its installed signing SHA-256 against the public association document.
+
+The Android manifest must retain the `asset_statements` metadata that points to `https://api.plsreload.de/.well-known/assetlinks.json`; server-side fingerprint equality alone is insufficient for Credential Manager to validate the native app against the WebAuthn RP ID.
