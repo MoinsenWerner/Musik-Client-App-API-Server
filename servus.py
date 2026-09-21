@@ -2673,7 +2673,7 @@ if __name__ == '__main__':
         db.create_all()
         
     app.logger.info("HBC Gateway API wird gestartet auf Port 80...")
-    app.run(host='0.0.0.0', port=80, debug=True)
+    app.run(host='0.0.0.0', port=80, ssl_context=("/etc/ssl/cloudflare/extraheldenog.de.pem", "/etc/ssl/cloudflare/extraheldenog.de.key"), debug=True)
         
     # Ersetzt app.run() durch den produktiven Waitress-Server
     # from waitress import serve
