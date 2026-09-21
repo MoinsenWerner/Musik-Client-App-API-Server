@@ -202,6 +202,7 @@ class MainActivity : FlutterActivity() {
                 connection.readTimeout = 30_000
                 connection.doOutput = body != null
                 connection.setRequestProperty("Accept", "application/json")
+                connection.setRequestProperty("X-Passkey-Client", "android-companion")
                 if (body != null) {
                     connection.setRequestProperty("Content-Type", "application/json")
                 }

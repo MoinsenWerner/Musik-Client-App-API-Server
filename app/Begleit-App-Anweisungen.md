@@ -293,3 +293,7 @@ Die Begleit-App deklariert die öffentliche Digital-Asset-Links-Datei zusätzlic
 ### Erforderliche Digital-Asset-Links-Beziehungen
 
 Credential Manager verlangt für die gemeinsame Passkey-/Anmeldeinformationen-Nutzung beide Beziehungen `delegate_permission/common.handle_all_urls` und `delegate_permission/common.get_login_creds`. Der Server liefert deshalb beide Werte. Nach dieser Serveränderung muss `servus.py` neu gestartet werden; anschließend ist mit `curl https://api.plsreload.de/.well-known/assetlinks.json` zu kontrollieren, dass beide Beziehungen öffentlich sichtbar sind.
+
+### Native Android-WebAuthn-Origin
+
+Credential Manager schreibt bei nativen Android-Passkeys nicht die HTTPS-Adresse, sondern `android:apk-key-hash:<SHA-256-in-Base64url>` als Origin in `clientDataJSON`. Die Begleit-App markiert ihre API-Aufrufe deshalb mit `X-Passkey-Client: android-companion`; der Server leitet daraus anhand des konfigurierten APK-Zertifikats den erwarteten Android-Origin ab. Browseranfragen verwenden weiterhin `https://api.plsreload.de`. Ohne diese Unterscheidung wird die erfolgreiche Android-Systemabfrage bei `/api/register/verify` beziehungsweise `/api/authenticate/verify` als Origin-Mismatch abgewiesen und endete früher als HTML-Fehler 500.

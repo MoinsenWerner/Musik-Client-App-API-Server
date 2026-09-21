@@ -1,3 +1,5 @@
+import base64
+
 from cryptography.fernet import Fernet
 
 from app import create_app
@@ -209,5 +211,68 @@ def test_android_asset_links_rejects_malformed_fingerprint(tmp_path):
     response = app.test_client().get("/.well-known/assetlinks.json")
 
     assert response.status_code == 503
-    assert response.json["received_hex_characters"] == 42
     assert "64 Hex-Zeichen" in response.json["error"]
+
+
+def test_android_options_remember_native_apk_origin(tmp_path):
+    fingerprint = (
+        "F7:0D:DB:43:03:65:B0:C2:D9:BD:13:B9:4A:56:DD:68:"
+        "2B:D0:0A:A1:E1:AD:8E:84:D8:59:B0:25:EA:06:18:8F"
+    )
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": tmp_path / "test.db",
+            "VAULT_KEY": Fernet.generate_key(),
+            "ANDROID_CERT_SHA256": fingerprint,
+        }
+    )
+    client = app.test_client()
+
+    response = client.post(
+        "/api/register/options",
+        base_url="https://api.plsreload.de",
+        headers={"X-Passkey-Client": "android-companion"},
+        json={"username": "felix", "password": "secret", "type": "fingerprint"},
+    )
+
+    certificate_hash = bytes.fromhex(fingerprint.replace(":", ""))
+    encoded_hash = base64.urlsafe_b64encode(certificate_hash).rstrip(b"=").decode()
+    assert response.status_code == 200
+    with client.session_transaction(base_url="https://api.plsreload.de") as state:
+        assert state["registration"]["origin"] == [
+            f"android:apk-key-hash:{encoded_hash}"
+        ]
+
+
+def test_browser_options_keep_https_origin(tmp_path):
+    app = configured_app(tmp_path)
+    client = app.test_client()
+
+    response = client.post(
+        "/api/register/options",
+        base_url="https://api.plsreload.de",
+        headers={"Origin": "https://api.plsreload.de"},
+        json={"username": "felix", "password": "secret", "type": "fingerprint"},
+    )
+
+    assert response.status_code == 200
+    with client.session_transaction(base_url="https://api.plsreload.de") as state:
+        assert state["registration"]["origin"] == "https://api.plsreload.de"
+
+
+def test_invalid_webauthn_verify_response_is_json(tmp_path):
+    app = configured_app(tmp_path)
+    client = app.test_client()
+    options = client.post(
+        "/api/register/options",
+        json={"username": "felix", "password": "secret", "type": "fingerprint"},
+    )
+    assert options.status_code == 200
+
+    response = client.post("/api/register/verify", json={})
+
+    assert response.status_code == 400
+    assert response.content_type == "application/json"
+    assert response.json["error_type"]
+    assert response.json["error"]

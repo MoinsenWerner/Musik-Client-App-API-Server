@@ -350,3 +350,5 @@ The companion accepts action `de.plsreload.passkey_vault.EXECUTE` with `operatio
 The browser passkey template detects missing `navigator.credentials` (common in Tasker WebViews) and displays an actionable companion-app/Chrome explanation rather than attempting `undefined.create()` or `undefined.get()`. The Android companion has an in-app RP/Asset-Links diagnostics action that compares its installed signing SHA-256 against the public association document.
 
 The Android manifest must retain the `asset_statements` metadata that points to `https://api.plsreload.de/.well-known/assetlinks.json`; server-side fingerprint equality alone is insufficient for Credential Manager to validate the native app against the WebAuthn RP ID.
+
+Native companion API requests carry `X-Passkey-Client: android-companion`. For these requests, auth option routes store `android:apk-key-hash:<base64url SHA-256 signing certificate>` as the expected WebAuthn origin; browser requests retain their HTTPS origin. WebAuthn verification exceptions return JSON 400 responses rather than Flask HTML 500 pages.
