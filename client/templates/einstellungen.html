@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>HBC Einstellungen</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+</head>
+<body>
+    <div class="scene einstellungen">
+        <div class="header">
+            <h2>HBC Einstellungen</h2>
+        </div>
+
+        <form action="{{ url_for('task_set_credentials') }}" method="POST" class="settings-form">
+            <div class="input-group">
+                <label for="client_id">Client ID</label>
+                <input type="text" id="client_id" name="client_id" value="{{ client_id }}" placeholder="Client ID eingeben...">
+            </div>
+
+            <div class="input-group">
+                <label for="client_secret">Client Secret</label>
+                <input type="password" id="client_secret" name="client_secret" value="{{ client_secret }}" placeholder="Client Secret eingeben...">
+            </div>
+
+            <button type="submit" class="btn-save"><i class="material-icons">save</i> Konfiguration übernehmen</button>
+        </form>
+
+        <div class="nav-container">
+            <a href="{{ url_for('startseite') }}" class="btn-nav back"><i class="material-icons">arrow_back</i> Zurück</a>
+        </div>
+    </div>
+</body>
+</html>
