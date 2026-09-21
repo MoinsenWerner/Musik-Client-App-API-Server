@@ -144,12 +144,16 @@ class MainActivity : FlutterActivity() {
             packageManager.getPackageInfo(packageName, android.content.pm.PackageManager.GET_SIGNATURES)
         }
         val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            packageInfo.signingInfo.apkContentsSigners
+            requireNotNull(packageInfo.signingInfo) {
+                "APK-Signaturinformationen sind nicht verfügbar"
+            }.apkContentsSigners
         } else {
             @Suppress("DEPRECATION")
             packageInfo.signatures
         }
-        val bytes = MessageDigest.getInstance("SHA-256").digest(signatures.first().toByteArray())
+        val signature = requireNotNull(signatures).firstOrNull()
+            ?: error("Die APK besitzt keine Signatur")
+        val bytes = MessageDigest.getInstance("SHA-256").digest(signature.toByteArray())
         return bytes.joinToString(":") { byte -> "%02X".format(byte) }
     }
 
