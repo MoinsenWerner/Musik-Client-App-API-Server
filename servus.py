@@ -2673,7 +2673,7 @@ if __name__ == '__main__':
         db.create_all()
         
     app.logger.info("HBC Gateway API wird gestartet auf Port 2050...")
-    app.run(host='0.0.0.0', port=2050, debug=True)
+    app.run(host='0.0.0.0', port=80, debug=True)
         
     # Ersetzt app.run() durch den produktiven Waitress-Server
     # from waitress import serve
