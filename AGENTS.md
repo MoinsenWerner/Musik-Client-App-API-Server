@@ -338,3 +338,17 @@ The webchat switches to its full-screen mobile list/detail navigation automatica
 8. Do not remove existing code unless the task explicitly requires it. This app has Tasker clients that may depend on odd-looking compatibility behavior.
 9. Before committing, clean generated files and inspect `git status`. Commit changes on the current branch with a focused message.
 10. Keep this guide current, especially the file inventory and complete route catalog.
+
+### Android passkey companion (`app/`)
+
+- `app/`: Flutter Android companion app using Android Credential Manager for browserless passkey registration/authentication and explicit Tasker intents.
+- `app/setup-and-build.sh`: installs Flutter/Android build dependencies on Debian, creates a persistent release key, runs analysis/tests/build, and copies the signed APK to `/home/passkey-apk/output.apk`.
+- `GET /.well-known/assetlinks.json`: returns Android Digital Asset Links for `ANDROID_APP_PACKAGE` and comma-separated `ANDROID_CERT_SHA256` certificate fingerprints. If the environment value is empty, it reads `ANDROID_CERT_SHA256_FILE` (default `/home/passkey-apk/cert-sha256.txt`, written by the companion build). Fingerprints are normalized to colon-separated SHA-256 and malformed values return 503. The statement includes both `delegate_permission/common.handle_all_urls` and `delegate_permission/common.get_login_creds`, as required by Android Credential Manager.
+
+The companion accepts action `de.plsreload.passkey_vault.EXECUTE` with `operation`, `username`, optional `password`, and optional `type`, and broadcasts results to Tasker with action `de.plsreload.passkey_vault.RESULT`. Keep the release keystore and `signing.env` generated below `/home/passkey-apk`; losing or replacing it changes the fingerprint and breaks the app/RP association.
+
+The browser passkey template detects missing `navigator.credentials` (common in Tasker WebViews) and displays an actionable companion-app/Chrome explanation rather than attempting `undefined.create()` or `undefined.get()`. The Android companion has an in-app RP/Asset-Links diagnostics action that compares its installed signing SHA-256 against the public association document.
+
+The Android manifest must retain the `asset_statements` metadata that points to `https://api.plsreload.de/.well-known/assetlinks.json`; server-side fingerprint equality alone is insufficient for Credential Manager to validate the native app against the WebAuthn RP ID.
+
+Native companion API requests carry `X-Passkey-Client: android-companion`. For these requests, auth option routes store `android:apk-key-hash:<base64url SHA-256 signing certificate>` as the expected WebAuthn origin; browser requests retain their HTTPS origin. WebAuthn verification exceptions return JSON 400 responses rather than Flask HTML 500 pages.

@@ -32,7 +32,13 @@ os.makedirs(UPDATES_DIR, exist_ok=True)
 class AuthRoutingMiddleware:
     """Serve the passkey vault and gateway through the same WSGI listener."""
 
-    AUTH_PATHS = {'/health', '/register', '/get', '/.well-known/webauthn'}
+    AUTH_PATHS = {
+        '/health',
+        '/register',
+        '/get',
+        '/.well-known/webauthn',
+        '/.well-known/assetlinks.json',
+    }
 
     def __init__(self, main_application, authentication_application):
         self.main_application = main_application
@@ -2666,8 +2672,8 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
         
-    app.logger.info("HBC Gateway API wird gestartet auf Port 80...")
-    app.run(host='0.0.0.0', port=80, debug=True)
+    app.logger.info("HBC Gateway API wird gestartet auf Port 2050...")
+    app.run(host='0.0.0.0', port=2050, debug=True)
         
     # Ersetzt app.run() durch den produktiven Waitress-Server
     # from waitress import serve
