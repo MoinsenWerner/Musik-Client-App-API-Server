@@ -281,10 +281,15 @@ Der Server verlangt stattdessen eine verifizierte WebAuthn-Antwort mit Benutzerv
 
 Wenn Credential Manager eine RP-/Relying-Party-Fehlermeldung ausgibt, tippe in der App auf **„RP-/Asset-Links-Verbindung prüfen“**. Das Ergebnis zeigt den Signaturfingerprint der tatsächlich installierten APK, die heruntergeladene `assetlinks.json`, die RP-ID sowie `assetlinks_matches_app_signature`.
 
-Der Wert `assetlinks_matches_app_signature` muss `true` sein. Ist er `false`, installiere genau die APK aus dem Build, deren Fingerprint in `/home/passkey-apk/cert-sha256.txt` steht, und kontrolliere, dass die öffentliche Asset-Links-Datei denselben Wert enthält. Bei einer erneuten Signatur mit anderem Keystore muss die Asset-Links-Datei aktualisiert werden.
+Die Werte `assetlinks_matches_app_signature` und `assetlinks_has_required_relations` müssen beide `true` sein. Ist er `false`, installiere genau die APK aus dem Build, deren Fingerprint in `/home/passkey-apk/cert-sha256.txt` steht, und kontrolliere, dass die öffentliche Asset-Links-Datei denselben Wert enthält. Bei einer erneuten Signatur mit anderem Keystore muss die Asset-Links-Datei aktualisiert werden.
 
 Die einfachen `/register`- und `/get`-Webseiten sind nur für Browser mit WebAuthn-Unterstützung gedacht. Eine Tasker-WebView besitzt häufig kein `navigator.credentials`; sie zeigt deshalb nun einen verständlichen Hinweis und muss für die browserlose Nutzung durch die Begleit-App ersetzt werden.
 
 ### Android-App-seitige RP-Verknüpfung
 
 Die Begleit-App deklariert die öffentliche Digital-Asset-Links-Datei zusätzlich über die Android-Manifest-Metadaten `asset_statements`. Diese Deklaration ist neben der serverseitigen `assetlinks.json` erforderlich, damit Credential Manager die in den WebAuthn-Optionen enthaltene RP-ID `api.plsreload.de` der nativen App zuordnen kann. Nach Änderungen daran muss die APK neu gebaut und installiert werden; ein reiner Serverneustart aktualisiert die installierte App nicht.
+
+
+### Erforderliche Digital-Asset-Links-Beziehungen
+
+Credential Manager verlangt für die gemeinsame Passkey-/Anmeldeinformationen-Nutzung beide Beziehungen `delegate_permission/common.handle_all_urls` und `delegate_permission/common.get_login_creds`. Der Server liefert deshalb beide Werte. Nach dieser Serveränderung muss `servus.py` neu gestartet werden; anschließend ist mit `curl https://api.plsreload.de/.well-known/assetlinks.json` zu kontrollieren, dass beide Beziehungen öffentlich sichtbar sind.

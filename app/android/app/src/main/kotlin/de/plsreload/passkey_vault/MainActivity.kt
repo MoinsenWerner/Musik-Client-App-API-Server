@@ -121,17 +121,24 @@ class MainActivity : FlutterActivity() {
         val assetLinks = session.get("/.well-known/assetlinks.json")
         val health = session.get("/health")
         val fingerprint = appSigningFingerprint()
-        val matches = runCatching {
-            val targets = org.json.JSONArray(assetLinks)
-            val values = targets.getJSONObject(0).getJSONObject("target")
-                .getJSONArray("sha256_cert_fingerprints")
-            (0 until values.length()).any { values.getString(it).equals(fingerprint, true) }
-        }.getOrDefault(false)
+        val targets = org.json.JSONArray(assetLinks)
+        val statement = targets.getJSONObject(0)
+        val fingerprints = statement.getJSONObject("target")
+            .getJSONArray("sha256_cert_fingerprints")
+        val relations = statement.getJSONArray("relation")
+        val matches = (0 until fingerprints.length())
+            .any { fingerprints.getString(it).equals(fingerprint, true) }
+        val relationValues = (0 until relations.length()).map(relations::getString).toSet()
+        val hasRequiredRelations = relationValues.containsAll(setOf(
+            "delegate_permission/common.handle_all_urls",
+            "delegate_permission/common.get_login_creds",
+        ))
         return JSONObject().apply {
             put("package_name", packageName)
             put("app_signing_sha256", fingerprint)
             put("assetlinks_matches_app_signature", matches)
-            put("assetlinks", org.json.JSONArray(assetLinks))
+            put("assetlinks_has_required_relations", hasRequiredRelations)
+            put("assetlinks", targets)
             put("health", JSONObject(health))
         }.toString()
     }
