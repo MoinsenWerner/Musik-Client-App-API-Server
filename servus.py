@@ -32,7 +32,13 @@ os.makedirs(UPDATES_DIR, exist_ok=True)
 class AuthRoutingMiddleware:
     """Serve the passkey vault and gateway through the same WSGI listener."""
 
-    AUTH_PATHS = {'/health', '/register', '/get', '/.well-known/webauthn'}
+    AUTH_PATHS = {
+        '/health',
+        '/register',
+        '/get',
+        '/.well-known/webauthn',
+        '/.well-known/assetlinks.json',
+    }
 
     def __init__(self, main_application, authentication_application):
         self.main_application = main_application
