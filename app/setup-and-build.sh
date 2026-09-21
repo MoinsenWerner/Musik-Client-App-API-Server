@@ -10,8 +10,13 @@ KEY_INFO="$OUTPUT_DIR/signing.env"
 
 if [[ $EUID -eq 0 ]]; then SUDO=; else SUDO=sudo; fi
 $SUDO apt-get update
-$SUDO apt-get install -y curl git unzip xz-utils zip ca-certificates openssl
+$SUDO apt-get install -y curl git unzip xz-utils zip ca-certificates openssl openjdk-17-jdk
 
+if [[ ! -x "$FLUTTER_DIR/bin/flutter" ]]; then
+  $SUDO mkdir -p "$(dirname "$FLUTTER_DIR")"
+  $SUDO git clone --depth 1 --branch stable https://github.com/flutter/flutter.git "$FLUTTER_DIR"
+  $SUDO chown -R "$(id -u):$(id -g)" "$FLUTTER_DIR"
+fi
 export PATH="$FLUTTER_DIR/bin:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
 export ANDROID_SDK_ROOT
 export ANDROID_HOME="$ANDROID_SDK_ROOT"

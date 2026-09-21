@@ -28,6 +28,18 @@ class _VaultPageState extends State<VaultPage> {
   String result = 'Bereit';
   bool busy = false;
 
+  Future<void> diagnostics() async {
+    setState(() { busy = true; result = 'Verbindung wird geprüft …'; });
+    try {
+      final value = await channel.invokeMethod<String>('diagnostics');
+      setState(() => result = const JsonEncoder.withIndent('  ').convert(jsonDecode(value!)));
+    } on PlatformException catch (error) {
+      setState(() => result = 'Fehler: ${error.message ?? error.code}');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   Future<void> run(String operation) async {
     setState(() { busy = true; result = 'Credential Manager wird gestartet …'; });
     try {
@@ -60,6 +72,7 @@ class _VaultPageState extends State<VaultPage> {
       const SizedBox(height: 20),
       FilledButton(onPressed: busy ? null : () => run('register'), child: const Text('Passkey registrieren')),
       OutlinedButton(onPressed: busy ? null : () => run('authenticate'), child: const Text('Passwort abrufen')),
+      TextButton(onPressed: busy ? null : diagnostics, child: const Text('RP-/Asset-Links-Verbindung prüfen')),
       const SizedBox(height: 20),
       SelectableText(result, key: const Key('result')),
     ]),

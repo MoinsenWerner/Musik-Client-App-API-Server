@@ -6,6 +6,7 @@ void main() {
     await tester.pumpWidget(const PasskeyVaultApp());
     expect(find.text('Passkey registrieren'), findsOneWidget);
     expect(find.text('Passwort abrufen'), findsOneWidget);
+    expect(find.text('RP-/Asset-Links-Verbindung prüfen'), findsOneWidget);
     expect(find.text('Benutzername'), findsOneWidget);
   });
 }

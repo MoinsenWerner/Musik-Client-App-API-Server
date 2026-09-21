@@ -276,3 +276,11 @@ Davon ist abzuraten:
 - Replay- und Umgehungsangriffe wären möglich.
 
 Der Server verlangt stattdessen eine verifizierte WebAuthn-Antwort mit Benutzerverifikation.
+
+## Fehlerdiagnose in der App
+
+Wenn Credential Manager eine RP-/Relying-Party-Fehlermeldung ausgibt, tippe in der App auf **„RP-/Asset-Links-Verbindung prüfen“**. Das Ergebnis zeigt den Signaturfingerprint der tatsächlich installierten APK, die heruntergeladene `assetlinks.json`, die RP-ID sowie `assetlinks_matches_app_signature`.
+
+Der Wert `assetlinks_matches_app_signature` muss `true` sein. Ist er `false`, installiere genau die APK aus dem Build, deren Fingerprint in `/home/passkey-apk/cert-sha256.txt` steht, und kontrolliere, dass die öffentliche Asset-Links-Datei denselben Wert enthält. Bei einer erneuten Signatur mit anderem Keystore muss die Asset-Links-Datei aktualisiert werden.
+
+Die einfachen `/register`- und `/get`-Webseiten sind nur für Browser mit WebAuthn-Unterstützung gedacht. Eine Tasker-WebView besitzt häufig kein `navigator.credentials`; sie zeigt deshalb nun einen verständlichen Hinweis und muss für die browserlose Nutzung durch die Begleit-App ersetzt werden.

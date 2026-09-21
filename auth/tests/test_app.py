@@ -112,6 +112,7 @@ def test_browser_routes_work_without_query_parameters(tmp_path):
     assert authenticate.status_code == 200
     assert b"Zugangsdaten abrufen" in authenticate.data
     assert b'id="username"' in authenticate.data
+    assert b"Tasker-WebView" in authenticate.data
 
 
 def test_https_origin_enables_secure_session_cookie(tmp_path):

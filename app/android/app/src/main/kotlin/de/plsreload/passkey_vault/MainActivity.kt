@@ -1,6 +1,7 @@
 package de.plsreload.passkey_vault
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.credentials.CreatePublicKeyCredentialRequest
 import androidx.credentials.CreatePublicKeyCredentialResponse
@@ -19,6 +20,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -48,8 +50,16 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 val arguments = call.arguments as? Map<*, *> ?: emptyMap<String, String>()
-                execute(call.method, arguments.mapKeys { it.key.toString() }.mapValues { it.value?.toString().orEmpty() }) {
-                    value, error -> if (error == null) result.success(value) else result.error("PASSKEY_ERROR", error, value)
+                if (call.method == "diagnostics") {
+                    scope.launch {
+                        runCatching { diagnostics() }
+                            .onSuccess(result::success)
+                            .onFailure { error -> result.error("DIAGNOSTICS_ERROR", error.message, null) }
+                    }
+                } else {
+                    execute(call.method, arguments.mapKeys { it.key.toString() }.mapValues { it.value?.toString().orEmpty() }) {
+                        value, error -> if (error == null) result.success(value) else result.error("PASSKEY_ERROR", error, value)
+                    }
                 }
             }
         pendingIntent?.let(::executeIntent)
@@ -94,8 +104,53 @@ class MainActivity : FlutterActivity() {
             }
             done(result, null)
         } catch (error: Exception) {
-            done(null, error.message ?: error.javaClass.simpleName)
+            val message = error.message ?: error.javaClass.simpleName
+            val details = if (message.contains("RP ID", ignoreCase = true)) {
+                val diagnostic = runCatching { diagnostics() }
+                    .getOrElse { diagnosticError -> "Diagnose nicht verfügbar: ${diagnosticError.message}" }
+                "\nDiagnose: $diagnostic"
+            } else {
+                ""
+            }
+            done(null, "${error.javaClass.simpleName}: $message$details")
         }
+    }
+
+    private suspend fun diagnostics(): String {
+        val session = ServerSession()
+        val assetLinks = session.get("/.well-known/assetlinks.json")
+        val health = session.get("/health")
+        val fingerprint = appSigningFingerprint()
+        val matches = runCatching {
+            val targets = org.json.JSONArray(assetLinks)
+            val values = targets.getJSONObject(0).getJSONObject("target")
+                .getJSONArray("sha256_cert_fingerprints")
+            (0 until values.length()).any { values.getString(it).equals(fingerprint, true) }
+        }.getOrDefault(false)
+        return JSONObject().apply {
+            put("package_name", packageName)
+            put("app_signing_sha256", fingerprint)
+            put("assetlinks_matches_app_signature", matches)
+            put("assetlinks", org.json.JSONArray(assetLinks))
+            put("health", JSONObject(health))
+        }.toString()
+    }
+
+    private fun appSigningFingerprint(): String {
+        val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageManager.getPackageInfo(packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.getPackageInfo(packageName, android.content.pm.PackageManager.GET_SIGNATURES)
+        }
+        val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfo.signingInfo.apkContentsSigners
+        } else {
+            @Suppress("DEPRECATION")
+            packageInfo.signatures
+        }
+        val bytes = MessageDigest.getInstance("SHA-256").digest(signatures.first().toByteArray())
+        return bytes.joinToString(":") { byte -> "%02X".format(byte) }
     }
 
     private suspend fun register(username: String, password: String, type: String): String {
@@ -124,17 +179,25 @@ class MainActivity : FlutterActivity() {
 
     private inner class ServerSession {
         private var cookie: String? = null
-        suspend fun post(path: String, body: String): String = withContext(Dispatchers.IO) {
+        suspend fun get(path: String): String = request(path, null)
+
+        suspend fun post(path: String, body: String): String = request(path, body)
+
+        private suspend fun request(path: String, body: String?): String = withContext(Dispatchers.IO) {
             val connection = URL(BASE_URL + path).openConnection() as HttpURLConnection
             try {
-                connection.requestMethod = "POST"
+                connection.requestMethod = if (body == null) "GET" else "POST"
                 connection.connectTimeout = 15_000
                 connection.readTimeout = 30_000
-                connection.doOutput = true
-                connection.setRequestProperty("Content-Type", "application/json")
+                connection.doOutput = body != null
                 connection.setRequestProperty("Accept", "application/json")
+                if (body != null) {
+                    connection.setRequestProperty("Content-Type", "application/json")
+                }
                 cookie?.let { connection.setRequestProperty("Cookie", it) }
-                connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
+                if (body != null) {
+                    connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
+                }
                 connection.getHeaderField("Set-Cookie")?.substringBefore(';')?.let { cookie = it }
                 val status = connection.responseCode
                 val response = (if (status in 200..299) connection.inputStream else connection.errorStream)
