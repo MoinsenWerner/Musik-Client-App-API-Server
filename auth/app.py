@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -44,6 +45,13 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         ORIGIN=os.getenv("ORIGIN"),
         WEBAUTHN_RELATED_ORIGINS=os.getenv(
             "WEBAUTHN_RELATED_ORIGINS", "https://api.plsreload.de"
+        ),
+        ANDROID_APP_PACKAGE=os.getenv(
+            "ANDROID_APP_PACKAGE", "de.plsreload.passkey_vault"
+        ),
+        ANDROID_CERT_SHA256=os.getenv("ANDROID_CERT_SHA256", ""),
+        ANDROID_CERT_SHA256_FILE=os.getenv(
+            "ANDROID_CERT_SHA256_FILE", "/home/passkey-apk/cert-sha256.txt"
         ),
         VAULT_KEY=os.getenv("VAULT_KEY"),
         CHALLENGE_TTL=300,
@@ -185,6 +193,56 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
     @app.get("/.well-known/webauthn")
     def webauthn_related_origins():
         return jsonify(origins=related_origins())
+
+    @app.get("/.well-known/assetlinks.json")
+    def android_asset_links():
+        """Associate the Android companion app with this WebAuthn relying party."""
+        configured_fingerprints = str(app.config["ANDROID_CERT_SHA256"]).strip()
+        fingerprint_file = Path(app.config["ANDROID_CERT_SHA256_FILE"])
+        if not configured_fingerprints and fingerprint_file.is_file():
+            configured_fingerprints = fingerprint_file.read_text(encoding="utf-8").strip()
+        fingerprints = [
+            value.strip().upper()
+            for value in configured_fingerprints.split(",")
+            if value.strip()
+        ]
+        if not fingerprints:
+            return jsonify(
+                error=(
+                    "ANDROID_CERT_SHA256 ist nicht gesetzt und die Fingerprint-Datei "
+                    f"{fingerprint_file} fehlt"
+                )
+            ), 503
+        normalized_fingerprints = []
+        for fingerprint in fingerprints:
+            compact = fingerprint.replace(":", "")
+            if not re.fullmatch(r"[0-9A-F]{64}", compact):
+                return jsonify(
+                    error=(
+                        "Ungültiger SHA-256-Zertifikatsfingerabdruck: erwartet werden "
+                        "genau 64 Hex-Zeichen (32 Bytes)"
+                    ),
+                    received=fingerprint,
+                    received_hex_characters=len(compact),
+                ), 503
+            normalized_fingerprints.append(
+                ":".join(compact[index : index + 2] for index in range(0, 64, 2))
+            )
+        return jsonify(
+            [
+                {
+                    "relation": [
+                        "delegate_permission/common.handle_all_urls",
+                        "delegate_permission/common.get_login_creds",
+                    ],
+                    "target": {
+                        "namespace": "android_app",
+                        "package_name": app.config["ANDROID_APP_PACKAGE"],
+                        "sha256_cert_fingerprints": normalized_fingerprints,
+                    },
+                }
+            ]
+        )
 
     @app.get("/register")
     def register_page():
