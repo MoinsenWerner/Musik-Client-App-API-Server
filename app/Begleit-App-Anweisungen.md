@@ -301,3 +301,28 @@ Credential Manager schreibt bei nativen Android-Passkeys nicht die HTTPS-Adresse
 ## Wiederholte Tasker-Intents
 
 Die Activity hält eingehende `REGISTER`-, `AUTHENTICATE`-, `EXECUTE`- und `passkeyvault://`-Intents in einer FIFO-Warteschlange. Sie verarbeitet jeweils nur einen Credential-Manager-Vorgang und startet den nächsten erst, wenn die Activity wieder vollständig im Vordergrund ist und der vorherige Vorgang sein Ergebnis an Tasker gesendet hat. Dadurch gehen Extras bei wiederholten Aufrufen einer bereits geöffneten App nicht verloren. Auch fehlerhafte `EXECUTE`-Intents erhalten einen Ergebnis-Broadcast mit einer Fehlermeldung, statt still ignoriert zu werden.
+
+## Tasker-Ergebnisvariablen
+
+Der Ergebnis-Broadcast `de.plsreload.passkey_vault.RESULT` enthält die kurzen Extras `result`, `error`, `status` und `schema` sowie weiterhin die kompatiblen Extras `passkey_result`, `passkey_error` und `passkey_status`. Tasker wandelt Intent-Extras automatisch in gleichnamige lokale Variablen um. Verwende im durch **Intent empfangen** gestarteten Task daher `%schema` und nicht `%evtprm4`.
+
+`%evtprm4` ist laut Tasker die URI-Scheme des Intent-Data-URI und kein frei belegbares Ergebnisfeld. Ein dynamisches Passwort oder Werte mit Doppelpunkten, Pipes und Unterstrichen können dort nicht zuverlässig übertragen werden; außerdem würde das Hinzufügen einer Data-URI ein bestehendes Tasker-Profil ohne Scheme-Filter nicht mehr auslösen.
+
+Die App setzt `%schema` wie folgt:
+
+- Registrierung erfolgreich: `success`
+- Bereits registriert: `registration_failed_already_registerd`
+- Sonstiger Registrierungsfehler: `registration_failed_unknown_error`
+- Authentifizierung erfolgreich: `user_id:<username>|password:<password>`
+- Sonstiger Authentifizierungsfehler: `authentication_failed_unknown_error`
+
+Ein Tasker-Ausgabetext kann daher beispielsweise so aufgebaut werden:
+
+```text
+result: %evtprm1
+Error: %error
+Status: %status
+Schema: %schema
+MIME-Type: %evtprm5
+Alle Daten: %evtprm1,%error,%status,%schema,%evtprm5
+```

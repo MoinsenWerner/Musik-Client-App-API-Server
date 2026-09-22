@@ -112,16 +112,48 @@ class MainActivity : FlutterActivity() {
             values[name] = source.getStringExtra(name) ?: source.data?.getQueryParameter(name).orEmpty()
         }
         execute(operation, values) { value, error ->
+            val schema = taskerResultSchema(operation, value, error)
             val output = Intent(RESULT_ACTION).apply {
                 setPackage("net.dinglisch.android.taskerm")
                 putExtra("passkey_result", value.orEmpty())
                 putExtra("passkey_error", error.orEmpty())
                 putExtra("passkey_status", if (error == null) 200 else 400)
+                // Short aliases become Tasker locals %result, %error, %status and %schema.
+                putExtra("result", value.orEmpty())
+                putExtra("error", error.orEmpty())
+                putExtra("status", if (error == null) 200 else 400)
+                putExtra("schema", schema)
             }
             sendBroadcast(output)
             intentOperationRunning = false
             processNextIntent()
         }
+    }
+
+    private fun taskerResultSchema(operation: String, value: String?, error: String?): String {
+        if (operation == "register") {
+            if (error == null) return "success"
+            val normalizedError = error.lowercase()
+            val alreadyRegistered = listOf(
+                "already registered",
+                "already exists",
+                "credential exists",
+                "excludecredential",
+                "invalidstateerror",
+            ).any { marker -> normalizedError.contains(marker) }
+            return if (alreadyRegistered) {
+                "registration_failed_already_registerd"
+            } else {
+                "registration_failed_unknown_error"
+            }
+        }
+        if (operation in setOf("authenticate", "get") && error == null) {
+            return runCatching {
+                val response = JSONObject(value.orEmpty())
+                "user_id:${response.getString("username")}|password:${response.getString("password")}"
+            }.getOrDefault("authentication_failed_unknown_error")
+        }
+        return "authentication_failed_unknown_error"
     }
 
     private fun execute(
