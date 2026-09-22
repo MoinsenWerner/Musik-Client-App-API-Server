@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>HBC Startseite</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+</head>
+<body>
+    <div class="scene startseite">
+        <div class="element cover-art">
+            <img src="{{ cover_png }}" alt="Cover Art">
+        </div>
+
+        <div class="element song-info">
+            <h1 class="title">{{ song_name }}</h1>
+            <p class="artist">{{ artist_name }}</p>
+        </div>
+
+        <div class="element progress-bar">
+            <div class="progress-current" style="width: 45%;"></div>
+        </div>
+
+        <div class="controls-container">
+            <form action="{{ url_for('task_previous') }}" method="POST">
+                <button type="submit" class="btn-control"><i class="material-icons">skip_previous</i></button>
+            </form>
+
+            <form action="{{ url_for('task_set_playpause') }}" method="POST">
+                <button type="submit" class="btn-control main-btn">
+                    <i class="material-icons">
+                        {% if play_state == 'playing' %}navigator_pause{% else %}play_arrow{% endif %}
+                    </i>
+                </button>
+            </form>
+
+            <form action="{{ url_for('task_next') }}" method="POST">
+                <button type="submit" class="btn-control"><i class="material-icons">skip_next</i></button>
+            </form>
+        </div>
+
+        <div class="repeat-container">
+            <form action="{{ url_for('task_set_repeat_state', state='track') }}" method="POST" style="display:inline;">
+                <button type="submit" class="btn-sub"><i class="material-icons">repeat_one</i></button>
+            </form>
+            <form action="{{ url_for('task_set_repeat_state', state='off') }}" method="POST" style="display:inline;">
+                <button type="submit" class="btn-sub"><i class="material-icons">repeat</i></button>
+            </form>
+        </div>
+
+        <div class="nav-container">
+            <a href="{{ url_for('einstellungen') }}" class="btn-nav"><i class="material-icons">settings</i> Einstellungen</a>
+        </div>
+    </div>
+</body>
+</html>
