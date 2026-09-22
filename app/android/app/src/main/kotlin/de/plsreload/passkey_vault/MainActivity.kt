@@ -21,6 +21,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.ArrayDeque
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -31,18 +32,32 @@ class MainActivity : FlutterActivity() {
 
     private lateinit var credentials: CredentialManager
     private val scope = CoroutineScope(Dispatchers.Main)
-    private var pendingIntent: Intent? = null
+    private val pendingIntents = ArrayDeque<Intent>()
+    private var flutterEngineReady = false
+    private var activityResumed = false
+    private var intentOperationRunning = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         credentials = CredentialManager.create(this)
-        pendingIntent = intent
+        enqueuePasskeyIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        pendingIntent = intent
-        executeIntent(intent)
+        setIntent(intent)
+        enqueuePasskeyIntent(intent)
+    }
+
+    override fun onPostResume() {
+        super.onPostResume()
+        activityResumed = true
+        processNextIntent()
+    }
+
+    override fun onPause() {
+        activityResumed = false
+        super.onPause()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -62,8 +77,26 @@ class MainActivity : FlutterActivity() {
                     }
                 }
             }
-        pendingIntent?.let(::executeIntent)
-        pendingIntent = null
+        flutterEngineReady = true
+        processNextIntent()
+    }
+
+    private fun enqueuePasskeyIntent(source: Intent) {
+        val isPasskeyIntent = source.action in setOf(
+            "de.plsreload.passkey_vault.EXECUTE",
+            "de.plsreload.passkey_vault.REGISTER",
+            "de.plsreload.passkey_vault.AUTHENTICATE",
+        ) || source.data?.scheme == "passkeyvault"
+        if (!isPasskeyIntent) return
+        pendingIntents.addLast(Intent(source))
+        processNextIntent()
+    }
+
+    private fun processNextIntent() {
+        if (!flutterEngineReady || !activityResumed || intentOperationRunning) return
+        val nextIntent = pendingIntents.pollFirst() ?: return
+        intentOperationRunning = true
+        executeIntent(nextIntent)
     }
 
     private fun executeIntent(source: Intent) {
@@ -72,7 +105,7 @@ class MainActivity : FlutterActivity() {
             source.action == "de.plsreload.passkey_vault.AUTHENTICATE" -> "authenticate"
             source.data?.host == "register" -> "register"
             source.data?.host == "get" -> "authenticate"
-            else -> return
+            else -> ""
         }
         val values = mutableMapOf<String, String>()
         for (name in listOf("username", "password", "type")) {
@@ -86,6 +119,8 @@ class MainActivity : FlutterActivity() {
                 putExtra("passkey_status", if (error == null) 200 else 400)
             }
             sendBroadcast(output)
+            intentOperationRunning = false
+            processNextIntent()
         }
     }
 

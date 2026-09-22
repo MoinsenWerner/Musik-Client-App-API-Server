@@ -297,3 +297,7 @@ Credential Manager verlangt für die gemeinsame Passkey-/Anmeldeinformationen-Nu
 ### Native Android-WebAuthn-Origin
 
 Credential Manager schreibt bei nativen Android-Passkeys nicht die HTTPS-Adresse, sondern `android:apk-key-hash:<SHA-256-in-Base64url>` als Origin in `clientDataJSON`. Die Begleit-App markiert ihre API-Aufrufe deshalb mit `X-Passkey-Client: android-companion`; der Server leitet daraus anhand des konfigurierten APK-Zertifikats den erwarteten Android-Origin ab. Browseranfragen verwenden weiterhin `https://api.plsreload.de`. Ohne diese Unterscheidung wird die erfolgreiche Android-Systemabfrage bei `/api/register/verify` beziehungsweise `/api/authenticate/verify` als Origin-Mismatch abgewiesen und endete früher als HTML-Fehler 500.
+
+## Wiederholte Tasker-Intents
+
+Die Activity hält eingehende `REGISTER`-, `AUTHENTICATE`-, `EXECUTE`- und `passkeyvault://`-Intents in einer FIFO-Warteschlange. Sie verarbeitet jeweils nur einen Credential-Manager-Vorgang und startet den nächsten erst, wenn die Activity wieder vollständig im Vordergrund ist und der vorherige Vorgang sein Ergebnis an Tasker gesendet hat. Dadurch gehen Extras bei wiederholten Aufrufen einer bereits geöffneten App nicht verloren. Auch fehlerhafte `EXECUTE`-Intents erhalten einen Ergebnis-Broadcast mit einer Fehlermeldung, statt still ignoriert zu werden.

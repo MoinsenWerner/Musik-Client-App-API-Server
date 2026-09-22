@@ -352,3 +352,5 @@ The browser passkey template detects missing `navigator.credentials` (common in 
 The Android manifest must retain the `asset_statements` metadata that points to `https://api.plsreload.de/.well-known/assetlinks.json`; server-side fingerprint equality alone is insufficient for Credential Manager to validate the native app against the WebAuthn RP ID.
 
 Native companion API requests carry `X-Passkey-Client: android-companion`. For these requests, auth option routes store `android:apk-key-hash:<base64url SHA-256 signing certificate>` as the expected WebAuthn origin; browser requests retain their HTTPS origin. WebAuthn verification exceptions return JSON 400 responses rather than Flask HTML 500 pages.
+
+The companion activity queues actionable Tasker/deep-link intents and processes them serially only while the Flutter engine is ready and the activity is resumed. Preserve `setIntent()` in `onNewIntent`, FIFO ordering, and completion-driven queue draining so repeated Tasker calls do not lose extras or launch overlapping Credential Manager operations.
