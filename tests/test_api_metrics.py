@@ -16,14 +16,17 @@ def test_metrics_summary_contains_endpoint_user_counts_and_timelines(tmp_path):
 
     assert summary["total_calls"] == 3
     assert summary["unique_user_count"] == 2
-    assert summary["users"] == [
-        {"username": "felix", "total_calls": 2},
-        {"username": "tasker", "total_calls": 1},
+    assert [(user["username"], user["total_calls"]) for user in summary["users"]] == [
+        ("felix", 2),
+        ("tasker", 1),
     ]
+    assert sum(point["count"] for point in summary["users"][0]["timeline"]) == 2
     assert summary["endpoints"][0]["endpoint"] == "/player"
     assert summary["endpoints"][0]["total_calls"] == 2
     assert summary["endpoints"][0]["successful_calls"] == 1
     assert sum(point["count"] for point in summary["endpoints"][0]["timeline"]) == 2
+    assert sum(point["count"] for point in summary["endpoints"][0]["successful_timeline"]) == 1
+    assert max(point["count"] for point in summary["unique_users_timeline"]) == 2
     assert sum(
         point["count"] for point in summary["endpoints"][0]["users"][0]["timeline"]
     ) == 2
@@ -47,6 +50,9 @@ def test_metrics_routes_and_client_mount(monkeypatch, tmp_path):
     html_response = client.get("/api-metrics")
     assert html_response.status_code == 200
     assert b"API Metrics" in html_response.data
+    assert b"Individueller Vergleich" in html_response.data
+    assert b"contextmenu" in html_response.data
+    assert b"chart-tooltip" in html_response.data
 
     bad_period = client.get("/api-metrics?version=cli&period=nope")
     assert bad_period.status_code == 400

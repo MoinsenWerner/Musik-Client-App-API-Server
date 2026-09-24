@@ -269,7 +269,7 @@ All functional player/queue routes below require the gateway Bearer token becaus
 
 ### API metrics and client application
 
-- **GET `/api-metrics`** — Browser dashboard for exact call counts, distinct users, endpoint/user breakdowns, and timeline graphs. It supports the periods `1h`, `3h`, `6h`, `12h`, `24h`, `3d`, `1w`, `2w`, `1m`, `3m`, `6m`, `1y`, and `3y`.
+- **GET `/api-metrics`** — Browser dashboard for exact call counts, distinct users, endpoint/user breakdowns, and timeline graphs with labeled time/count axes. Hovering reports exact values at the nearest time bucket, while right-click toggles a larger graph with finer axis divisions. The first graph supports checkbox selection of overall, user, endpoint, and endpoint/user time series. It supports the periods `1h`, `3h`, `6h`, `12h`, `24h`, `3d`, `1w`, `2w`, `1m`, `3m`, `6m`, `1y`, and `3y`.
 - **GET `/api-metrics?version=cli&period=<period>`** — Returns the selected metrics window as JSON, including zero-filled time buckets for the overall, per-endpoint, and per-endpoint/per-user graphs. Requests to the metrics route itself and CORS preflights are not counted.
 - **GET `/client`** and **GET `/client/health`** — Client-application health response. All present and future routes registered by `client/ok.py` are reachable only through the `/client` mount when `servus.py` runs.
 

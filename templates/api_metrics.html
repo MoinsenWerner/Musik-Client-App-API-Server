@@ -8,17 +8,29 @@
         :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
         * { box-sizing: border-box; }
         body { margin: 0; background: #0b1220; color: #e5e7eb; }
+        body.chart-open { overflow: hidden; }
         main { width: min(1320px, calc(100% - 2rem)); margin: 2rem auto 4rem; }
-        header, .toolbar, .card, details { background: #111827; border: 1px solid #263244; border-radius: 14px; }
+        header, .toolbar, .card, details, .custom-chart { background: #111827; border: 1px solid #263244; border-radius: 14px; }
         header { padding: 1.4rem; display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
         h1, h2, h3, p { margin-top: 0; }
         a { color: #93c5fd; }
         .toolbar { margin: 1rem 0; padding: 1rem; display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
         select { background: #1f2937; color: white; border: 1px solid #4b5563; border-radius: 8px; padding: .65rem; }
+        .custom-chart { padding: 1rem; margin-bottom: 1rem; }
+        .series-picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: .5rem; max-height: 220px; overflow: auto; padding: .7rem; background: #0b1220; border-radius: 8px; }
+        .series-picker label { display: flex; align-items: center; gap: .5rem; font-size: .88rem; }
+        .series-picker input { accent-color: #22d3ee; }
         .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
         .card { padding: 1rem; min-width: 0; }
         .number { font-size: 2rem; font-weight: 800; color: #67e8f9; }
-        canvas { width: 100%; height: 110px; display: block; }
+        .chart-shell { position: relative; width: 100%; min-height: 185px; background: #0d1728; border-radius: 9px; padding: .35rem; }
+        .chart-shell canvas { width: 100%; height: 175px; display: block; cursor: crosshair; }
+        .chart-shell.expanded { position: fixed; inset: 4vh 3vw; z-index: 1000; width: auto; min-height: 0; padding: 1rem; border: 2px solid #38bdf8; box-shadow: 0 20px 80px #000; }
+        .chart-shell.expanded canvas { height: calc(92vh - 2rem); }
+        .chart-help { color: #64748b; font-size: .75rem; margin: .4rem 0 0; }
+        #chart-tooltip { position: fixed; z-index: 1100; pointer-events: none; display: none; min-width: 170px; max-width: 360px; padding: .55rem .7rem; border: 1px solid #475569; border-radius: 7px; background: rgba(2, 6, 23, .96); color: #f8fafc; font-size: .78rem; line-height: 1.45; box-shadow: 0 8px 30px #000; }
+        .tooltip-time { color: #93c5fd; font-weight: 700; }
+        .tooltip-value { display: flex; justify-content: space-between; gap: 1rem; }
         #users { word-break: break-word; color: #cbd5e1; }
         details { margin-top: 1rem; overflow: hidden; }
         summary { cursor: pointer; padding: 1rem; display: grid; grid-template-columns: 1fr auto; gap: 1rem; }
@@ -26,17 +38,17 @@
         .endpoint-body { padding: 1rem; }
         table { width: 100%; border-collapse: collapse; }
         th, td { text-align: left; padding: .65rem; border-bottom: 1px solid #263244; vertical-align: middle; }
-        .user-chart { width: 220px; height: 55px; }
+        td .chart-shell { min-width: 320px; }
         .muted { color: #94a3b8; }
         .error { color: #fca5a5; }
-        @media (max-width: 760px) { .cards { grid-template-columns: 1fr; } summary { grid-template-columns: 1fr; } .user-chart { width: 130px; } }
+        @media (max-width: 760px) { .cards { grid-template-columns: 1fr; } summary { grid-template-columns: 1fr; } .chart-shell.expanded { inset: 2vh 2vw; } td .chart-shell { min-width: 240px; } }
     </style>
 </head>
 <body>
 <main>
     <header>
         <div><h1>API Metrics</h1><p class="muted">Aufrufe, Nutzer und zeitlicher Verlauf aller API-Endpunkte.</p></div>
-        <nav><a href="/dashboard">Dashboard</a> · <a id="json-link" href="/api-metrics?version=cli&period=24h">JSON</a></nav>
+        <nav><a href="/dashboard">Dashboard</a> · <a id="json-link" href="/api-metrics?version=cli&amp;period=24h">JSON</a></nav>
     </header>
     <div class="toolbar">
         <label for="period">Zeitraum</label>
@@ -44,49 +56,118 @@
         <span id="range" class="muted"></span>
     </div>
     <p id="error" class="error" hidden></p>
+    <section class="custom-chart">
+        <h2>Individueller Vergleich</h2>
+        <p class="muted">Wähle eine oder mehrere Messreihen. Rechtsklick vergrößert jeden Graphen; ein weiterer Rechtsklick stellt ihn wieder her.</p>
+        <div id="series-picker" class="series-picker"></div>
+        <div class="chart-shell"><canvas id="custom"></canvas></div>
+        <p class="chart-help">Über den Graphen fahren, um exakte Werte für einen Zeitpunkt zu sehen.</p>
+    </section>
     <section class="cards">
         <article class="card"><h2>Aufrufe insgesamt</h2><div id="total" class="number">–</div></article>
         <article class="card"><h2>Aktive Nutzer</h2><div id="unique" class="number">–</div><p id="users"></p></article>
-        <article class="card"><h2>Gesamtverlauf</h2><canvas id="overall"></canvas></article>
+        <article class="card"><h2>Gesamtverlauf</h2><div class="chart-shell"><canvas id="overall"></canvas></div></article>
     </section>
     <section><h2 style="margin-top:1.5rem">Endpunkte</h2><div id="endpoints"></div></section>
 </main>
+<div id="chart-tooltip"></div>
 <script>
 const period = document.getElementById('period');
 const endpointList = document.getElementById('endpoints');
+const tooltip = document.getElementById('chart-tooltip');
+const charts = new Map();
+const palette = ['#22d3ee', '#a78bfa', '#fb7185', '#fbbf24', '#4ade80', '#60a5fa', '#f472b6', '#fb923c', '#2dd4bf', '#c084fc'];
+let currentData = null;
 function esc(value) { const node = document.createElement('span'); node.textContent = value; return node.innerHTML; }
-function draw(canvas, timeline, color = '#22d3ee') {
+function compact(value) { return new Intl.NumberFormat('de-DE', {notation: value >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 1}).format(value); }
+function timeLabel(iso, detailed = false) { const date = new Date(iso); return date.toLocaleString('de-DE', detailed ? {dateStyle: 'short', timeStyle: 'medium'} : {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'}); }
+function draw(canvas, series) {
+    if (!canvas || !series.length) return;
+    const shell = canvas.closest('.chart-shell');
+    const expanded = shell.classList.contains('expanded');
     const ratio = window.devicePixelRatio || 1;
-    const width = canvas.clientWidth || 300, height = canvas.clientHeight || 100;
+    const width = canvas.clientWidth || 600, height = canvas.clientHeight || 175;
     canvas.width = width * ratio; canvas.height = height * ratio;
     const ctx = canvas.getContext('2d'); ctx.scale(ratio, ratio); ctx.clearRect(0, 0, width, height);
-    const values = timeline.map(point => point.count), max = Math.max(1, ...values);
-    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
-    values.forEach((value, index) => { const x = values.length < 2 ? width / 2 : index * width / (values.length - 1); const y = height - 5 - value * (height - 10) / max; index ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-    ctx.stroke();
+    const margins = {left: expanded ? 70 : 52, right: 15, top: 18, bottom: expanded ? 55 : 43};
+    const plot = {left: margins.left, top: margins.top, width: width - margins.left - margins.right, height: height - margins.top - margins.bottom};
+    const values = series.flatMap(item => item.timeline.map(point => point.count));
+    const rawMaximum = Math.max(1, ...values), desiredYTicks = expanded ? 10 : 5;
+    const yStep = Math.max(1, Math.ceil(rawMaximum / desiredYTicks));
+    const maximum = Math.ceil(rawMaximum / yStep) * yStep;
+    const yTicks = maximum / yStep, xTicks = expanded ? 12 : 5;
+    ctx.font = `${expanded ? 12 : 10}px system-ui`; ctx.textBaseline = 'middle';
+    for (let tick = 0; tick <= yTicks; tick += 1) {
+        const y = plot.top + plot.height * tick / yTicks;
+        const value = maximum * (yTicks - tick) / yTicks;
+        ctx.strokeStyle = '#26364d'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(plot.left, y); ctx.lineTo(plot.left + plot.width, y); ctx.stroke();
+        ctx.fillStyle = '#94a3b8'; ctx.textAlign = 'right'; ctx.fillText(compact(value), plot.left - 7, y);
+    }
+    const timeline = series[0].timeline;
+    for (let tick = 0; tick <= xTicks; tick += 1) {
+        const index = Math.min(timeline.length - 1, Math.round((timeline.length - 1) * tick / xTicks));
+        const x = plot.left + plot.width * tick / xTicks;
+        ctx.strokeStyle = '#1e293b'; ctx.beginPath(); ctx.moveTo(x, plot.top); ctx.lineTo(x, plot.top + plot.height); ctx.stroke();
+        ctx.save(); ctx.translate(x, plot.top + plot.height + 8); if (!expanded) ctx.rotate(-Math.PI / 7); ctx.fillStyle = '#94a3b8'; ctx.textAlign = expanded ? 'center' : 'right'; ctx.textBaseline = 'top'; ctx.fillText(timeLabel(timeline[index].timestamp), 0, 0); ctx.restore();
+    }
+    ctx.fillStyle = '#cbd5e1'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText('Aufrufe / Nutzer', plot.left, 2);
+    ctx.textAlign = 'right'; ctx.fillText('Zeit', plot.left + plot.width, height - 13);
+    series.forEach((item, seriesIndex) => {
+        ctx.strokeStyle = item.color || palette[seriesIndex % palette.length]; ctx.lineWidth = expanded ? 2.5 : 2; ctx.beginPath();
+        item.timeline.forEach((point, index) => { const x = plot.left + (timeline.length < 2 ? plot.width / 2 : index * plot.width / (timeline.length - 1)); const y = plot.top + plot.height - point.count * plot.height / maximum; index ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
+    });
+    charts.set(canvas, {series, plot, timeline});
+}
+function bindChart(canvas) {
+    if (!canvas || canvas.dataset.bound) return;
+    canvas.dataset.bound = '1';
+    canvas.addEventListener('contextmenu', event => {
+        event.preventDefault(); const shell = canvas.closest('.chart-shell'); const opening = !shell.classList.contains('expanded');
+        document.querySelectorAll('.chart-shell.expanded').forEach(item => item.classList.remove('expanded'));
+        shell.classList.toggle('expanded', opening); document.body.classList.toggle('chart-open', opening); tooltip.style.display = 'none';
+        requestAnimationFrame(() => charts.forEach((state, chart) => draw(chart, state.series)));
+    });
+    canvas.addEventListener('mousemove', event => {
+        const state = charts.get(canvas); if (!state) return;
+        const rect = canvas.getBoundingClientRect(); const x = event.clientX - rect.left;
+        if (x < state.plot.left || x > state.plot.left + state.plot.width) { tooltip.style.display = 'none'; return; }
+        const index = Math.max(0, Math.min(state.timeline.length - 1, Math.round((x - state.plot.left) * (state.timeline.length - 1) / state.plot.width)));
+        tooltip.innerHTML = `<div class="tooltip-time">${esc(timeLabel(state.timeline[index].timestamp, true))}</div>${state.series.map(item => `<div class="tooltip-value"><span style="color:${item.color}">${esc(item.label)}</span><strong>${item.timeline[index].count.toLocaleString('de-DE')}</strong></div>`).join('')}`;
+        tooltip.style.display = 'block'; tooltip.style.left = `${Math.min(window.innerWidth - tooltip.offsetWidth - 8, event.clientX + 14)}px`; tooltip.style.top = `${Math.max(8, event.clientY - tooltip.offsetHeight - 12)}px`;
+    });
+    canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+}
+function allSeries(data) {
+    const result = [{id: 'total', label: 'Gesamtaufrufe', timeline: data.timeline}, {id: 'unique-users', label: 'Aktive Nutzer je Zeitintervall', timeline: data.unique_users_timeline}];
+    data.users.forEach(user => result.push({id: `user:${user.username}`, label: `Nutzer: ${user.username}`, timeline: user.timeline}));
+    data.endpoints.forEach(endpoint => {
+        const endpointName = `${endpoint.method} ${endpoint.endpoint}`;
+        result.push({id: `endpoint:${endpointName}`, label: `Endpunkt: ${endpointName}`, timeline: endpoint.timeline});
+        result.push({id: `endpoint-success:${endpointName}`, label: `Erfolgreich: ${endpointName}`, timeline: endpoint.successful_timeline});
+        endpoint.users.forEach(user => result.push({id: `endpoint-user:${endpointName}:${user.username}`, label: `${endpointName} · ${user.username}`, timeline: user.timeline}));
+    });
+    return result.map((item, index) => ({...item, color: palette[index % palette.length]}));
+}
+function renderCustom(data) {
+    const available = allSeries(data), picker = document.getElementById('series-picker');
+    const selected = new Set([...picker.querySelectorAll('input:checked')].map(input => input.value)); if (!selected.size) selected.add('total');
+    picker.innerHTML = available.map(item => `<label><input type="checkbox" value="${esc(item.id)}" ${selected.has(item.id) ? 'checked' : ''}><span style="color:${item.color}">●</span> ${esc(item.label)}</label>`).join('');
+    const redraw = () => { const chosen = available.filter(item => picker.querySelector(`input[value="${CSS.escape(item.id)}"]`)?.checked); draw(document.getElementById('custom'), chosen.length ? chosen : [available[0]]); };
+    picker.querySelectorAll('input').forEach(input => input.addEventListener('change', redraw)); redraw();
 }
 function render(data) {
-    document.getElementById('total').textContent = data.total_calls.toLocaleString('de-DE');
-    document.getElementById('unique').textContent = data.unique_user_count.toLocaleString('de-DE');
+    currentData = data; charts.clear();
+    document.getElementById('total').textContent = data.total_calls.toLocaleString('de-DE'); document.getElementById('unique').textContent = data.unique_user_count.toLocaleString('de-DE');
     document.getElementById('users').textContent = data.users.length ? data.users.map(user => `${user.username} (${user.total_calls})`).join(', ') : 'Keine Nutzer';
-    document.getElementById('range').textContent = `${new Date(data.from).toLocaleString('de-DE')} – ${new Date(data.to).toLocaleString('de-DE')}`;
-    document.getElementById('json-link').href = `/api-metrics?version=cli&period=${encodeURIComponent(data.period)}`;
-    draw(document.getElementById('overall'), data.timeline);
-    endpointList.innerHTML = data.endpoints.length ? data.endpoints.map((endpoint, index) => `<details>
-        <summary><strong>${esc(endpoint.method)} ${esc(endpoint.endpoint)}</strong><span>${endpoint.total_calls.toLocaleString('de-DE')} Aufrufe</span></summary>
-        <div class="endpoint-body"><canvas id="endpoint-${index}"></canvas><h3>Nutzer dieses Endpunkts</h3>
-        <table><thead><tr><th>Nutzer</th><th>Exakte Aufrufe</th><th>Verlauf</th></tr></thead><tbody>${endpoint.users.map((user, userIndex) => `<tr><td>${esc(user.username)}</td><td>${user.total_calls.toLocaleString('de-DE')}</td><td><canvas class="user-chart" id="user-${index}-${userIndex}"></canvas></td></tr>`).join('')}</tbody></table></div>
-    </details>`).join('') : '<p class="muted">In diesem Zeitraum wurden keine API-Aufrufe erfasst.</p>';
-    data.endpoints.forEach((endpoint, index) => { draw(document.getElementById(`endpoint-${index}`), endpoint.timeline); endpoint.users.forEach((user, userIndex) => draw(document.getElementById(`user-${index}-${userIndex}`), user.timeline, '#a78bfa')); });
+    document.getElementById('range').textContent = `${new Date(data.from).toLocaleString('de-DE')} – ${new Date(data.to).toLocaleString('de-DE')}`; document.getElementById('json-link').href = `/api-metrics?version=cli&period=${encodeURIComponent(data.period)}`;
+    endpointList.innerHTML = data.endpoints.length ? data.endpoints.map((endpoint, index) => `<details><summary><strong>${esc(endpoint.method)} ${esc(endpoint.endpoint)}</strong><span>${endpoint.total_calls.toLocaleString('de-DE')} Aufrufe</span></summary><div class="endpoint-body"><div class="chart-shell"><canvas id="endpoint-${index}"></canvas></div><h3>Nutzer dieses Endpunkts</h3><table><thead><tr><th>Nutzer</th><th>Exakte Aufrufe</th><th>Verlauf</th></tr></thead><tbody>${endpoint.users.map((user, userIndex) => `<tr><td>${esc(user.username)}</td><td>${user.total_calls.toLocaleString('de-DE')}</td><td><div class="chart-shell"><canvas id="user-${index}-${userIndex}"></canvas></div></td></tr>`).join('')}</tbody></table></div></details>`).join('') : '<p class="muted">In diesem Zeitraum wurden keine API-Aufrufe erfasst.</p>';
+    renderCustom(data); draw(document.getElementById('overall'), [{label: 'Gesamtaufrufe', color: palette[0], timeline: data.timeline}]);
+    data.endpoints.forEach((endpoint, index) => { draw(document.getElementById(`endpoint-${index}`), [{label: `${endpoint.method} ${endpoint.endpoint}`, color: palette[0], timeline: endpoint.timeline}, {label: 'Erfolgreiche Aufrufe', color: palette[4], timeline: endpoint.successful_timeline}]); endpoint.users.forEach((user, userIndex) => draw(document.getElementById(`user-${index}-${userIndex}`), [{label: user.username, color: palette[1], timeline: user.timeline}])); });
+    document.querySelectorAll('canvas').forEach(bindChart);
 }
-async function load() {
-    const error = document.getElementById('error'); error.hidden = true;
-    try { const response = await fetch(`/api-metrics?version=cli&period=${encodeURIComponent(period.value || '24h')}`); if (!response.ok) throw new Error(`HTTP ${response.status}`); render(await response.json()); }
-    catch (reason) { error.textContent = `Metriken konnten nicht geladen werden: ${reason.message}`; error.hidden = false; }
-}
+async function load() { const error = document.getElementById('error'); error.hidden = true; try { const response = await fetch(`/api-metrics?version=cli&period=${encodeURIComponent(period.value || '24h')}`); if (!response.ok) throw new Error(`HTTP ${response.status}`); render(await response.json()); } catch (reason) { error.textContent = `Metriken konnten nicht geladen werden: ${reason.message}`; error.hidden = false; } }
 fetch('/api-metrics?version=cli&period=24h').then(response => response.json()).then(data => { data.available_periods.forEach(item => period.add(new Option(item.label, item.value, false, item.value === data.period))); render(data); });
-period.addEventListener('change', load);
-window.addEventListener('resize', () => { clearTimeout(window.redrawTimer); window.redrawTimer = setTimeout(load, 150); });
+period.addEventListener('change', load); window.addEventListener('resize', () => { clearTimeout(window.redrawTimer); window.redrawTimer = setTimeout(() => currentData && render(currentData), 150); });
 </script>
 </body>
 </html>

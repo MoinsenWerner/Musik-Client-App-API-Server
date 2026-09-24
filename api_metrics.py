@@ -91,12 +91,16 @@ def build_metrics_summary(database_file, period="24h", now=None):
         ).fetchall()
 
     overall_counts = defaultdict(int)
+    bucket_users = defaultdict(set)
     endpoint_data = {}
     user_totals = defaultdict(int)
+    user_timeline_counts = defaultdict(lambda: defaultdict(int))
     for requested_at, endpoint, method, username, status_code in rows:
         bucket_index = (requested_at - bucket_start) // bucket_seconds
         overall_counts[bucket_index] += 1
+        bucket_users[bucket_index].add(username)
         user_totals[username] += 1
+        user_timeline_counts[username][bucket_index] += 1
         key = f"{method} {endpoint}"
         data = endpoint_data.setdefault(
             key,
@@ -105,6 +109,7 @@ def build_metrics_summary(database_file, period="24h", now=None):
                 "method": method,
                 "total_calls": 0,
                 "successful_calls": 0,
+                "successful_timeline_counts": defaultdict(int),
                 "timeline_counts": defaultdict(int),
                 "users": {},
             },
@@ -112,6 +117,7 @@ def build_metrics_summary(database_file, period="24h", now=None):
         data["total_calls"] += 1
         if status_code < 400:
             data["successful_calls"] += 1
+            data["successful_timeline_counts"][bucket_index] += 1
         data["timeline_counts"][bucket_index] += 1
         user_data = data["users"].setdefault(
             username,
@@ -132,12 +138,21 @@ def build_metrics_summary(database_file, period="24h", now=None):
         data["timeline"] = _timeline(
             bucket_start, bucket_count, bucket_seconds, data.pop("timeline_counts")
         )
+        data["successful_timeline"] = _timeline(
+            bucket_start, bucket_count, bucket_seconds, data.pop("successful_timeline_counts")
+        )
         data["users"] = users
         endpoints.append(data)
     endpoints.sort(key=lambda item: (-item["total_calls"], item["endpoint"], item["method"]))
 
     users = [
-        {"username": username, "total_calls": count}
+        {
+            "username": username,
+            "total_calls": count,
+            "timeline": _timeline(
+                bucket_start, bucket_count, bucket_seconds, user_timeline_counts[username]
+            ),
+        }
         for username, count in sorted(user_totals.items(), key=lambda item: (-item[1], item[0].lower()))
     ]
     return {
@@ -155,5 +170,11 @@ def build_metrics_summary(database_file, period="24h", now=None):
         "unique_user_count": len(users),
         "users": users,
         "timeline": _timeline(bucket_start, bucket_count, bucket_seconds, overall_counts),
+        "unique_users_timeline": _timeline(
+            bucket_start,
+            bucket_count,
+            bucket_seconds,
+            {index: len(usernames) for index, usernames in bucket_users.items()},
+        ),
         "endpoints": endpoints,
     }
