@@ -49,6 +49,14 @@ aufgelisteten HTTPS-Origins, dieselbe RP-ID zu verwenden. Weitere kontrollierte
 Webseiten können bei Bedarf als zusätzliche, kommaseparierte Origins ergänzt
 werden.
 
+Für die native Android-Begleit-App liefert `/.well-known/assetlinks.json` die
+Digital-Asset-Links-Verknüpfung. Der Build schreibt den Signaturfingerabdruck
+automatisch nach `/home/passkey-apk/cert-sha256.txt`; diese Datei wird über
+`ANDROID_CERT_SHA256_FILE` gelesen. `ANDROID_CERT_SHA256` kann sie übersteuern.
+Nur vollständige SHA-256-Fingerprints mit 64 Hex-Zeichen werden ausgeliefert,
+damit Android keine nichtssagende Meldung „RP ID cannot be validated“ aufgrund
+eines fehlerhaften Asset-Links-Dokuments zeigt.
+
 Flask setzt bei einer HTTPS-`ORIGIN` automatisch ein Secure-Session-Cookie. Die
 von Cloudflare an Flask weitergeleitete interne HTTP-Verbindung beeinträchtigt
 WebAuthn nicht, weil Registrierung und Authentifizierung im Browser unter der

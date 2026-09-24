@@ -101,7 +101,7 @@
             return `<article class="route">
                 <a href="${escapeHtml(route.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(route.rule)}</a>
                 <div class="details"><span class="methods">${route.methods.join(', ')}</span><span>${escapeHtml(route.description)}</span></div>
-                <div class="badges">${route.browser_compatible ? '<span class="badge">Browser kompatibel</span>' : ''}${route.authentication ? '<span class="badge auth">Authentification</span>' : ''}${route.query_parameters.length ? `<span class="badge">? ${route.query_parameters.length} Query-Parameter</span>` : ''}</div>
+                <div class="badges"><span class="badge">${escapeHtml(route.source)}</span>${route.browser_compatible ? '<span class="badge">Browser kompatibel</span>' : ''}${route.authentication ? '<span class="badge auth">Authentification</span>' : ''}${route.query_parameters.length ? `<span class="badge">? ${route.query_parameters.length} Query-Parameter</span>` : ''}</div>
                 ${querySection}
                 ${parameterSection}
             </article>`;

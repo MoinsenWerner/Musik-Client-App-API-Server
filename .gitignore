@@ -3,6 +3,7 @@
 /chat_uploads/
 /log/
 /oauth2_gateway.db
+/api_metrics.db
 /__pycache__/
 /auth/vault.db
 /auth/__pycache__/
