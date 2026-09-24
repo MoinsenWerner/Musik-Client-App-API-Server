@@ -1,0 +1,10 @@
+Running Gradle task 'assembleRelease'...                          300.2s
+✓ Built build/app/outputs/flutter-apk/app-release.apk (57.2MB)
+
+Warning:
+The JKS keystore uses a proprietary format. It is recommended to migrate to PKCS12 which is an industry standard format using "keytool -importkeystore -srckeystore /home/passkey-apk/passkey-release.jks -destkeystore /home/passkey-apk/passkey-release.jks -deststoretype pkcs12".
+APK erstellt: /home/passkey-apk/output.apk
+ANDROID_APP_PACKAGE=de.plsreload.passkey_vault
+ANDROID_CERT_SHA256=F7:0D:DB:43:03:65:B0:C2:D9:BD:13:B9:4A:56:DD:68:2B:D0:0A:A1:E1:AD:8E:84:D8:59:B0:25:EA:06:18:8F
+Setze beide Werte beim Flask-Server und starte ihn neu.
+(env) root@kvm12124:/home/Heidelberg/v2/v3/v4/git/Musik-Client-App-API-Server/app# /usr/lib/jvm/zulu-17-amd64/bin/java

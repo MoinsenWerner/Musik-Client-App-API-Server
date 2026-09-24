@@ -108,11 +108,9 @@ DASHBOARD_HTML = """
             </div>
 
             <div class="flex flex-wrap gap-2">
-                <button onclick="controlAction('/player/previous', 'POST')" class="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-sm font-medium">⏮ Zurück</button>
                 <button onclick="togglePlayback()" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded text-sm font-medium">⏯ Play / Pause umschalten</button>
-                <!--button onclick="controlAction('/player/pause', 'PUT')" class="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-sm font-medium">⏸ Pause</button>
-                <button onclick="controlAction('/player/play', 'PUT')" class="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-sm font-medium">▶ Play</button--->
-                <button onclick="controlAction('/player/next', 'POST')" class="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-sm font-medium">⏭ Weiter</button>
+                <button onclick="controlAction('/player/pause', 'PUT')" class="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-sm font-medium">⏸ Pause</button>
+                <button onclick="controlAction('/player/play', 'PUT')" class="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded text-sm font-medium">▶ Play</button>
             </div>
 
             <div class="flex flex-wrap gap-4 items-center pt-2 border-t border-gray-800">
