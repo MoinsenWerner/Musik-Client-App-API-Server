@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ from webauthn import (
     verify_authentication_response,
     verify_registration_response,
 )
+from webauthn.helpers.exceptions import WebAuthnException
 from webauthn.helpers.structs import (
     AuthenticatorAttachment,
     AuthenticatorSelectionCriteria,
@@ -44,6 +46,13 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         ORIGIN=os.getenv("ORIGIN"),
         WEBAUTHN_RELATED_ORIGINS=os.getenv(
             "WEBAUTHN_RELATED_ORIGINS", "https://api.plsreload.de"
+        ),
+        ANDROID_APP_PACKAGE=os.getenv(
+            "ANDROID_APP_PACKAGE", "de.plsreload.passkey_vault"
+        ),
+        ANDROID_CERT_SHA256=os.getenv("ANDROID_CERT_SHA256", ""),
+        ANDROID_CERT_SHA256_FILE=os.getenv(
+            "ANDROID_CERT_SHA256_FILE", "/home/passkey-apk/cert-sha256.txt"
         ),
         VAULT_KEY=os.getenv("VAULT_KEY"),
         CHALLENGE_TTL=300,
@@ -151,6 +160,39 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
                 origins.append(origin)
         return origins
 
+    def android_fingerprints() -> tuple[list[str], Path]:
+        """Return validated, canonical SHA-256 fingerprints for the Android app."""
+        configured = str(app.config["ANDROID_CERT_SHA256"]).strip()
+        fingerprint_file = Path(app.config["ANDROID_CERT_SHA256_FILE"])
+        if not configured and fingerprint_file.is_file():
+            configured = fingerprint_file.read_text(encoding="utf-8").strip()
+        fingerprints = []
+        for value in configured.split(","):
+            compact = value.strip().upper().replace(":", "")
+            if not compact:
+                continue
+            if not re.fullmatch(r"[0-9A-F]{64}", compact):
+                raise ValueError(
+                    "Ungültiger SHA-256-Zertifikatsfingerabdruck: erwartet werden "
+                    "genau 64 Hex-Zeichen (32 Bytes)"
+                )
+            fingerprints.append(
+                ":".join(compact[index : index + 2] for index in range(0, 64, 2))
+            )
+        return fingerprints, fingerprint_file
+
+    def expected_request_origin(browser_origin: str) -> str | list[str]:
+        """Select the WebAuthn origin used by browsers or the native Android app."""
+        if request.headers.get("X-Passkey-Client") != "android-companion":
+            return browser_origin
+        fingerprints, _ = android_fingerprints()
+        if not fingerprints:
+            raise ValueError("Kein Android-Zertifikatsfingerabdruck konfiguriert")
+        return [
+            f"android:apk-key-hash:{_b64(bytes.fromhex(value.replace(':', '')))}"
+            for value in fingerprints
+        ]
+
     def remember(kind: str, username: str, challenge: bytes, **extra: Any) -> None:
         session[kind] = {
             "username": username,
@@ -173,6 +215,10 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
     def configuration_error(error: RuntimeError):
         return jsonify(error=str(error)), 503
 
+    @app.errorhandler(WebAuthnException)
+    def invalid_webauthn_response(error: WebAuthnException):
+        return jsonify(error=str(error), error_type=type(error).__name__), 400
+
     @app.get("/health")
     def health():
         rp_id, origin = webauthn_context()
@@ -185,6 +231,36 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
     @app.get("/.well-known/webauthn")
     def webauthn_related_origins():
         return jsonify(origins=related_origins())
+
+    @app.get("/.well-known/assetlinks.json")
+    def android_asset_links():
+        """Associate the Android companion app with this WebAuthn relying party."""
+        try:
+            fingerprints, fingerprint_file = android_fingerprints()
+        except ValueError as error:
+            return jsonify(error=str(error)), 503
+        if not fingerprints:
+            return jsonify(
+                error=(
+                    "ANDROID_CERT_SHA256 ist nicht gesetzt und die Fingerprint-Datei "
+                    f"{fingerprint_file} fehlt"
+                )
+            ), 503
+        return jsonify(
+            [
+                {
+                    "relation": [
+                        "delegate_permission/common.handle_all_urls",
+                        "delegate_permission/common.get_login_creds",
+                    ],
+                    "target": {
+                        "namespace": "android_app",
+                        "package_name": app.config["ANDROID_APP_PACKAGE"],
+                        "sha256_cert_fingerprints": fingerprints,
+                    },
+                }
+            ]
+        )
 
     @app.get("/register")
     def register_page():
@@ -219,7 +295,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             if passkey_type == "fido"
             else AuthenticatorAttachment.PLATFORM
         )
-        rp_id, origin = webauthn_context()
+        rp_id, browser_origin = webauthn_context()
+        origin = expected_request_origin(browser_origin)
         options = generate_registration_options(
             rp_id=rp_id,
             rp_name=app.config["RP_NAME"],
@@ -281,7 +358,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             ).fetchone()
         if row is None:
             raise ValueError("Unbekannter Benutzer")
-        rp_id, origin = webauthn_context()
+        rp_id, browser_origin = webauthn_context()
+        origin = expected_request_origin(browser_origin)
         options = generate_authentication_options(
             rp_id=rp_id,
             allow_credentials=[PublicKeyCredentialDescriptor(id=row["credential_id"])],

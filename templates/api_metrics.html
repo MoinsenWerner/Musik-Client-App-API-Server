@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>API Metrics</title>
+    <style>
+        :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #0b1220; color: #e5e7eb; }
+        main { width: min(1320px, calc(100% - 2rem)); margin: 2rem auto 4rem; }
+        header, .toolbar, .card, details { background: #111827; border: 1px solid #263244; border-radius: 14px; }
+        header { padding: 1.4rem; display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
+        h1, h2, h3, p { margin-top: 0; }
+        a { color: #93c5fd; }
+        .toolbar { margin: 1rem 0; padding: 1rem; display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
+        select { background: #1f2937; color: white; border: 1px solid #4b5563; border-radius: 8px; padding: .65rem; }
+        .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+        .card { padding: 1rem; min-width: 0; }
+        .number { font-size: 2rem; font-weight: 800; color: #67e8f9; }
+        canvas { width: 100%; height: 110px; display: block; }
+        #users { word-break: break-word; color: #cbd5e1; }
+        details { margin-top: 1rem; overflow: hidden; }
+        summary { cursor: pointer; padding: 1rem; display: grid; grid-template-columns: 1fr auto; gap: 1rem; }
+        details[open] summary { border-bottom: 1px solid #263244; }
+        .endpoint-body { padding: 1rem; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: .65rem; border-bottom: 1px solid #263244; vertical-align: middle; }
+        .user-chart { width: 220px; height: 55px; }
+        .muted { color: #94a3b8; }
+        .error { color: #fca5a5; }
+        @media (max-width: 760px) { .cards { grid-template-columns: 1fr; } summary { grid-template-columns: 1fr; } .user-chart { width: 130px; } }
+    </style>
+</head>
+<body>
+<main>
+    <header>
+        <div><h1>API Metrics</h1><p class="muted">Aufrufe, Nutzer und zeitlicher Verlauf aller API-Endpunkte.</p></div>
+        <nav><a href="/dashboard">Dashboard</a> · <a id="json-link" href="/api-metrics?version=cli&period=24h">JSON</a></nav>
+    </header>
+    <div class="toolbar">
+        <label for="period">Zeitraum</label>
+        <select id="period"></select>
+        <span id="range" class="muted"></span>
+    </div>
+    <p id="error" class="error" hidden></p>
+    <section class="cards">
+        <article class="card"><h2>Aufrufe insgesamt</h2><div id="total" class="number">–</div></article>
+        <article class="card"><h2>Aktive Nutzer</h2><div id="unique" class="number">–</div><p id="users"></p></article>
+        <article class="card"><h2>Gesamtverlauf</h2><canvas id="overall"></canvas></article>
+    </section>
+    <section><h2 style="margin-top:1.5rem">Endpunkte</h2><div id="endpoints"></div></section>
+</main>
+<script>
+const period = document.getElementById('period');
+const endpointList = document.getElementById('endpoints');
+function esc(value) { const node = document.createElement('span'); node.textContent = value; return node.innerHTML; }
+function draw(canvas, timeline, color = '#22d3ee') {
+    const ratio = window.devicePixelRatio || 1;
+    const width = canvas.clientWidth || 300, height = canvas.clientHeight || 100;
+    canvas.width = width * ratio; canvas.height = height * ratio;
+    const ctx = canvas.getContext('2d'); ctx.scale(ratio, ratio); ctx.clearRect(0, 0, width, height);
+    const values = timeline.map(point => point.count), max = Math.max(1, ...values);
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    values.forEach((value, index) => { const x = values.length < 2 ? width / 2 : index * width / (values.length - 1); const y = height - 5 - value * (height - 10) / max; index ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.stroke();
+}
+function render(data) {
+    document.getElementById('total').textContent = data.total_calls.toLocaleString('de-DE');
+    document.getElementById('unique').textContent = data.unique_user_count.toLocaleString('de-DE');
+    document.getElementById('users').textContent = data.users.length ? data.users.map(user => `${user.username} (${user.total_calls})`).join(', ') : 'Keine Nutzer';
+    document.getElementById('range').textContent = `${new Date(data.from).toLocaleString('de-DE')} – ${new Date(data.to).toLocaleString('de-DE')}`;
+    document.getElementById('json-link').href = `/api-metrics?version=cli&period=${encodeURIComponent(data.period)}`;
+    draw(document.getElementById('overall'), data.timeline);
+    endpointList.innerHTML = data.endpoints.length ? data.endpoints.map((endpoint, index) => `<details>
+        <summary><strong>${esc(endpoint.method)} ${esc(endpoint.endpoint)}</strong><span>${endpoint.total_calls.toLocaleString('de-DE')} Aufrufe</span></summary>
+        <div class="endpoint-body"><canvas id="endpoint-${index}"></canvas><h3>Nutzer dieses Endpunkts</h3>
+        <table><thead><tr><th>Nutzer</th><th>Exakte Aufrufe</th><th>Verlauf</th></tr></thead><tbody>${endpoint.users.map((user, userIndex) => `<tr><td>${esc(user.username)}</td><td>${user.total_calls.toLocaleString('de-DE')}</td><td><canvas class="user-chart" id="user-${index}-${userIndex}"></canvas></td></tr>`).join('')}</tbody></table></div>
+    </details>`).join('') : '<p class="muted">In diesem Zeitraum wurden keine API-Aufrufe erfasst.</p>';
+    data.endpoints.forEach((endpoint, index) => { draw(document.getElementById(`endpoint-${index}`), endpoint.timeline); endpoint.users.forEach((user, userIndex) => draw(document.getElementById(`user-${index}-${userIndex}`), user.timeline, '#a78bfa')); });
+}
+async function load() {
+    const error = document.getElementById('error'); error.hidden = true;
+    try { const response = await fetch(`/api-metrics?version=cli&period=${encodeURIComponent(period.value || '24h')}`); if (!response.ok) throw new Error(`HTTP ${response.status}`); render(await response.json()); }
+    catch (reason) { error.textContent = `Metriken konnten nicht geladen werden: ${reason.message}`; error.hidden = false; }
+}
+fetch('/api-metrics?version=cli&period=24h').then(response => response.json()).then(data => { data.available_periods.forEach(item => period.add(new Option(item.label, item.value, false, item.value === data.period))); render(data); });
+period.addEventListener('change', load);
+window.addEventListener('resize', () => { clearTimeout(window.redrawTimer); window.redrawTimer = setTimeout(load, 150); });
+</script>
+</body>
+</html>

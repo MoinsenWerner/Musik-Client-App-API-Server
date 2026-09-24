@@ -40,6 +40,9 @@ const jsonify = (credential, register) => {
   return {id: credential.id, rawId: encode(credential.rawId), type: credential.type, response};
 };
 async function run() {
+  if (!window.PublicKeyCredential || !navigator.credentials || !navigator.credentials.create || !navigator.credentials.get) {
+    throw new Error('WebAuthn ist in diesem Browser/WebView nicht verfügbar. Öffne die Seite in Chrome oder verwende die Android-Begleit-App; eine Tasker-WebView kann keinen Passkey-Dialog anzeigen.');
+  }
   const register = initial.mode === 'register';
   const prefix = register ? 'register' : 'authenticate';
   const username = document.querySelector('#username').value.trim();
