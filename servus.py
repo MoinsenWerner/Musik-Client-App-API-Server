@@ -24,13 +24,15 @@ from packaging.version import parse as parse_version
 from werkzeug.utils import safe_join, secure_filename
 from auth.app import app as auth_app
 from chat import register_chat_routes
+from client.ok import app as client_app
+from api_metrics import PERIODS, build_metrics_summary, initialize_metrics_database, record_request
 
 UPDATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "updates")
 os.makedirs(UPDATES_DIR, exist_ok=True)
 
 
-class AuthRoutingMiddleware:
-    """Serve the passkey vault and gateway through the same WSGI listener."""
+class ApplicationRoutingMiddleware:
+    """Serve main, passkey-vault and client applications on one WSGI listener."""
 
     AUTH_PATHS = {
         '/health',
@@ -40,12 +42,18 @@ class AuthRoutingMiddleware:
         '/.well-known/assetlinks.json',
     }
 
-    def __init__(self, main_application, authentication_application):
+    def __init__(self, main_application, authentication_application, client_application):
         self.main_application = main_application
         self.authentication_application = authentication_application
+        self.client_application = client_application
 
     def __call__(self, environ, start_response):
         path = environ.get('PATH_INFO', '')
+        if path == '/client' or path.startswith('/client/'):
+            client_environ = environ.copy()
+            client_environ['SCRIPT_NAME'] = environ.get('SCRIPT_NAME', '') + '/client'
+            client_environ['PATH_INFO'] = path[7:] or '/'
+            return self.client_application(client_environ, start_response)
         if path == '/auth' or path.startswith('/auth/'):
             auth_environ = environ.copy()
             auth_environ['SCRIPT_NAME'] = environ.get('SCRIPT_NAME', '') + '/auth'
@@ -58,9 +66,16 @@ class AuthRoutingMiddleware:
 
 app = Flask(__name__)
 register_chat_routes(app)
-app.wsgi_app = AuthRoutingMiddleware(app.wsgi_app, auth_app.wsgi_app)
+app.wsgi_app = ApplicationRoutingMiddleware(
+    app.wsgi_app,
+    auth_app.wsgi_app,
+    client_app.wsgi_app,
+)
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DATABASE_FILE = os.path.join(BASE_DIR, 'oauth2_gateway.db')
+METRICS_DATABASE_FILE = os.environ.get(
+    'API_METRICS_DATABASE_FILE', os.path.join(BASE_DIR, 'api_metrics.db')
+)
 DB_BACKUP_FOLDER = os.path.join(BASE_DIR, 'db_bak')
 DB_BACKUP_GIT_FOLDER = os.path.join(DB_BACKUP_FOLDER, 'git-repository')
 DB_BACKUP_GIT_URL = 'https://github.com/MoinsenWerner/Musik-Client-API-Server-DB-Backups.git'
@@ -77,6 +92,7 @@ ADMIN_USERS = ["felix", "test", "moin"]
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DATABASE_FILE}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = secrets.token_hex(32)
+initialize_metrics_database(METRICS_DATABASE_FILE)
 
 # ==========================================
 # KONFIGURATION FÜR NEUE ROUTEN (EIGENE ANPASSUNG)
@@ -304,6 +320,70 @@ def add_cors_headers(response):
         f"Headers: {dict(response.headers)}\n"
         f"Content: {content_log}"
     )
+    track_api_request(response)
+    return response
+
+
+def metrics_username():
+    """Returns the best non-secret user/client identity available for this request."""
+    authorization = request.headers.get('Authorization', '')
+    if authorization.startswith('Bearer '):
+        token = authorization[7:].strip()
+        try:
+            with sqlite3.connect(DATABASE_FILE) as connection:
+                row = connection.execute(
+                    "SELECT client_id FROM oauth_tokens WHERE access_token = ?", (token,)
+                ).fetchone()
+            if row:
+                return row[0]
+        except sqlite3.Error:
+            pass
+
+    candidates = []
+    if request.view_args:
+        for key in ('username', 'sender', 'user', 'client_id', 'wert3'):
+            candidates.append(request.view_args.get(key))
+    for key in ('username', 'user', 'sender', 'client_id', 'ersteller'):
+        candidates.extend((request.args.get(key), request.form.get(key)))
+    candidates.extend((request.headers.get('X-User'), request.headers.get('user')))
+    if request.is_json:
+        payload = request.get_json(silent=True)
+        if isinstance(payload, dict):
+            candidates.extend(payload.get(key) for key in ('username', 'user', 'sender', 'client_id'))
+    return next((str(value).strip() for value in candidates if value and str(value).strip()), 'anonymous')
+
+
+def track_api_request(response):
+    """Persists one completed request without affecting its response."""
+    if request.path == '/api-metrics' or request.method == 'OPTIONS':
+        return
+    try:
+        if request.url_rule:
+            endpoint = request.script_root + (
+                '' if request.script_root and request.url_rule.rule == '/' else request.url_rule.rule
+            )
+        else:
+            endpoint = request.path
+        record_request(
+            METRICS_DATABASE_FILE,
+            endpoint,
+            request.method,
+            metrics_username(),
+            response.status_code,
+        )
+    except (OSError, sqlite3.Error, ValueError) as error:
+        app.logger.warning(f"API-Metrik konnte nicht gespeichert werden: {error}")
+
+
+@auth_app.after_request
+def track_auth_api_request(response):
+    track_api_request(response)
+    return response
+
+
+@client_app.after_request
+def track_client_api_request(response):
+    track_api_request(response)
     return response
 
 # ==========================================
@@ -1370,9 +1450,12 @@ DASHBOARD_TEMPLATE = """
 </head>
 <body class="bg-gray-900 text-gray-100 font-sans antialiased p-8">
     <div class="max-w-6xl mx-auto">
-        <header class="mb-8 border-b border-gray-800 pb-4">
-            <h1 class="text-3xl font-bold text-white tracking-tight">HBC Gateway Management</h1>
-            <p class="text-sm text-gray-400 mt-1">OAuth2 Provider & Reverse-Proxy für Debian-Umgebungen</p>
+        <header class="mb-8 border-b border-gray-800 pb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+                <h1 class="text-3xl font-bold text-white tracking-tight">HBC Gateway Management</h1>
+                <p class="text-sm text-gray-400 mt-1">OAuth2 Provider & Reverse-Proxy für Debian-Umgebungen</p>
+            </div>
+            <a href="/api-metrics" class="bg-cyan-700 hover:bg-cyan-600 text-white font-semibold px-5 py-2 rounded transition shadow">Metrics</a>
         </header>
 
         {% with messages = get_flashed_messages(with_categories=true) %}
@@ -2242,6 +2325,20 @@ def dashboard():
     config = get_config()
     return render_template_string(DASHBOARD_TEMPLATE, clients=clients, config=config, callback_url=SPOTIFY_FIXED_REDIRECT_URI)
 
+
+@app.route('/api-metrics', methods=['GET'])
+def api_metrics():
+    """Shows request metrics as a browser dashboard or machine-readable JSON."""
+    period = request.args.get('period', '24h')
+    if period not in PERIODS:
+        return jsonify({
+            'error': 'invalid_period',
+            'available_periods': list(PERIODS),
+        }), 400
+    if request.args.get('version') == 'cli':
+        return jsonify(build_metrics_summary(METRICS_DATABASE_FILE, period))
+    return render_template('api_metrics.html')
+
 @app.route('/dashboard/config/save', methods=['POST'])
 def save_config():
     cfg = get_config()
@@ -2579,13 +2676,28 @@ def describe_parameter(parameter_type, name, required, converter=None):
 
 
 def collect_routes():
-    """Erfasst bei jedem Aufruf alle aktuell registrierten Anwendungsrouten."""
+    """Erfasst Routen aus Gateway, Chat, Passkey-Vault und Client-Anwendung."""
     routes = []
-    for rule in sorted(app.url_map.iter_rules(), key=lambda item: item.rule):
-        if rule.endpoint == 'static':
-            continue
+    applications = (
+        ('servus.py', '', app),
+        ('auth/app.py', '/auth', auth_app),
+        ('client/ok.py', '/client', client_app),
+    )
+    registered_rules = []
+    for default_source, prefix, flask_app in applications:
+        for rule in flask_app.url_map.iter_rules():
+            if rule.endpoint == 'static':
+                continue
+            view_function = flask_app.view_functions.get(rule.endpoint)
+            module = getattr(view_function, '__module__', '')
+            source_file = 'chat.py' if module == 'chat' else default_source
+            full_rule = prefix + ('' if rule.rule == '/' and prefix else rule.rule)
+            registered_rules.append((full_rule or '/', rule, view_function, source_file))
+
+    for full_rule, rule, view_function, source_file in sorted(
+        registered_rules, key=lambda item: (item[0], item[3])
+    ):
         methods = sorted(rule.methods - {'HEAD', 'OPTIONS'})
-        view_function = app.view_functions.get(rule.endpoint)
         try:
             source = inspect.getsource(view_function) if view_function else ''
         except (OSError, TypeError):
@@ -2596,7 +2708,7 @@ def collect_routes():
             else f"Endpunkt {rule.endpoint.replace('_', ' ')}"
         )
         parameters = []
-        for converter, name in re.findall(r'<(?:(\w+):)?(\w+)>', rule.rule):
+        for converter, name in re.findall(r'<(?:(\w+):)?(\w+)>', full_rule):
             parameters.append(describe_parameter('path', name, True, converter or 'string'))
         detected_parameters = list(ROUTE_PARAMETER_OVERRIDES.get(rule.endpoint, []))
         detected_parameters.extend(extract_request_parameters(view_function) if view_function else [])
@@ -2617,11 +2729,12 @@ def collect_routes():
         authentication = (
             'execute_proxy_request' in source
             or 'verify_gateway_token' in source
-            or rule.rule in {'/authorize', '/token'}
+            or full_rule in {'/authorize', '/token'}
         )
         routes.append({
-            'rule': rule.rule,
-            'url': route_example_url(rule.rule),
+            'rule': full_rule,
+            'url': route_example_url(full_rule),
+            'source': source_file,
             'methods': methods,
             'description': description,
             'parameters': parameters,

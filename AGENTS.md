@@ -29,6 +29,8 @@ Most Python behavior is in `servus.py`; the independently runnable chat subsyste
 - `servus.py`: the complete Flask app, configuration constants, SQLAlchemy models, startup schema alterations, backup hooks, request/response logging, OAuth implementation, Spotify/local-backend proxy, all API routes, and an inline dashboard template.
 - `chat.py`: independent chat blueprint, chat-specific SQLite schema, attachment storage, direct/self/group messaging, history, and media routes. `servus.py` imports and registers it automatically; `python3 chat.py` runs it alone on the same host/port.
 - `auth/`: independently runnable WebAuthn/passkey vault with its Flask app, template, dependency files, setup script, and tests. `servus.py` mounts it into the same WSGI listener on port 2050; `python3 auth/app.py` runs it alone.
+- `client/ok.py`: independently testable client Flask application. `servus.py` mounts all of its routes exclusively below `/client`.
+- `api_metrics.py`: SQLite request-metrics storage, time-window definitions, and aggregation used by the metrics GUI and JSON API.
 - `README.md`: currently only the repository title; this `AGENTS.md` is the authoritative engineering guide.
 - `AGENTS.md`: this file. Update it whenever externally visible behavior or repository structure changes.
 - `.gitignore`: ignores `/db_bak/`, which contains sensitive generated database backups and the backup repository clone.
@@ -60,6 +62,7 @@ Most Python behavior is in `servus.py`; the independently runnable chat subsyste
 - `chat.db`: separate SQLite database containing chat messages, groups, memberships, and attachment metadata.
 - `chat_uploads/`: uploaded chat files and images; opaque response IDs form the stored filenames.
 - `auth/vault.db`: encrypted passkey-vault database, created automatically by the auth application.
+- `api_metrics.db`: request timestamp, normalized route, HTTP method/status, and best available client/user identity for API metrics.
 
 Do not commit runtime databases, logs, uploaded APKs, credentials, or backup clones. The main databases, chat uploads, logs, backups, and Python bytecode are ignored, but still inspect `git status` carefully for other generated files.
 
@@ -262,11 +265,17 @@ All functional player/queue routes below require the gateway Bearer token becaus
 
 ### Route discovery
 
-- **GET `/routes`** — Dynamically enumerates Flask's URL map, so future routes appear automatically. Default representation depends on the `Accept` header: browsers receive `templates/routes.html`; other clients receive semicolon-separated route paths. Query `format=html` or `format=text` overrides negotiation. Python AST inspection discovers path/query/form/file parameters and augments known routes with manual metadata. The HTML UI offers live search, filters, parameter explanations, and collapsible fixed-route groupings.
+- **GET `/routes`** — Dynamically enumerates the route maps from `servus.py`, the registered `chat.py` routes, `auth/app.py` below `/auth`, and `client/ok.py` below `/client`. Default representation depends on the `Accept` header: browsers receive `templates/routes.html`; other clients receive semicolon-separated route paths. Query `format=html` or `format=text` overrides negotiation. Python AST inspection discovers path/query/form/file parameters and augments known routes with manual metadata. The HTML UI offers live search, source labels, filters, parameter explanations, and collapsible fixed-path groups.
+
+### API metrics and client application
+
+- **GET `/api-metrics`** — Browser dashboard for exact call counts, distinct users, endpoint/user breakdowns, and timeline graphs. It supports the periods `1h`, `3h`, `6h`, `12h`, `24h`, `3d`, `1w`, `2w`, `1m`, `3m`, `6m`, `1y`, and `3y`.
+- **GET `/api-metrics?version=cli&period=<period>`** — Returns the selected metrics window as JSON, including zero-filled time buckets for the overall, per-endpoint, and per-endpoint/per-user graphs. Requests to the metrics route itself and CORS preflights are not counted.
+- **GET `/client`** and **GET `/client/health`** — Client-application health response. All present and future routes registered by `client/ok.py` are reachable only through the `/client` mount when `servus.py` runs.
 
 ### Passkey vault (`auth/`)
 
-The auth Flask application is routed by `AuthRoutingMiddleware` through the same `0.0.0.0:2050` listener as the main application. Its original routes remain available at `/health`, `/register`, `/get`, and `/api/...`; the complete application is also available below `/auth` (for example `/auth/register`). The `/auth` mount uses `SCRIPT_NAME`, and its template builds API requests from that prefix. Running `python3 auth/app.py` starts only the auth application on port 2050.
+The auth Flask application is routed by `ApplicationRoutingMiddleware` through the same `0.0.0.0:2050` listener as the main application. Its original routes remain available at `/health`, `/register`, `/get`, and `/api/...`; the complete application is also available below `/auth` (for example `/auth/register`). The `/auth` mount uses `SCRIPT_NAME`, and its template builds API requests from that prefix. Running `python3 auth/app.py` starts only the auth application on port 2050.
 
 - **GET `/health`** — Returns WebAuthn origin, relying-party ID, and `status: ok` as JSON.
 - **GET `/.well-known/webauthn`** — Returns the WebAuthn Related Origin Requests JSON document. Its `origins` array contains the configured `ORIGIN` and valid comma-separated HTTPS origins from `WEBAUTHN_RELATED_ORIGINS` (default: `https://api.plsreload.de`). The middleware exposes this route at the mandatory top-level location even when the auth application is mounted below `/auth`.
